@@ -25,6 +25,15 @@ comptime {
         @export("strncmp", strncmp, .Strong);
         @export("strerror", strerror, .Strong);
         @export("strlen", strlen, .Strong);
+        @export("strstr", strstr, .Strong);
+        @export("strspn", strspn, .Strong);
+        @export("isalpha", isalpha, .Strong);
+        @export("isdigit", isdigit, .Strong);
+        @export("isalnum", isalnum, .Strong);
+        @export("islower", islower, .Strong);
+        @export("toupper", toupper, .Strong);
+        @export("abs", abs, .Strong);
+        @export("strchr", strchr, .Strong);
     }
 }
 
@@ -58,11 +67,140 @@ extern fn strerror(errnum: c_int) [*]const u8 {
     return c"TODO strerror implementation";
 }
 
+extern fn strstr(_haystack: [*]const u8, needle: [*]const u8) ?[*]const u8 {
+    // TODO better implementation, this is a naive implementation
+    var n = strlen(needle);
+    var haystack = _haystack;
+
+    while (haystack[0] != 0) {
+        if (strncmp(haystack, needle, n) == 0) {
+            return haystack;
+        }
+        haystack += 1;
+    }
+
+    return null;
+}
+
+extern fn strspn(_str: [*]const u8, _cset: [*]const u8) usize {
+    var a = _str;
+    var s = _str;
+    var c = _cset;
+    var byteset: [32 / @sizeOf(usize)]usize = undefined;
+    for (byteset) |*item| {
+        item.* = 0;
+    }
+    const bytesetDiv: usize = 8 * @sizeOf(usize);
+    const shiftType = std.math.Log2Int(usize);
+
+    if (c[0] == 0) return 0;
+    if (c[1] == 0) {
+        while (s[0] == c[0]) {
+            s += 1;
+        }
+        return @ptrToInt(s) - @ptrToInt(a);
+    }
+
+    while (c[0] != 0) {
+        const index = usize(c[0]) / bytesetDiv;
+        byteset[index] |= usize(1) << @intCast(shiftType, c[0] % bytesetDiv);
+        if (byteset[index] == 0) {
+            break;
+        }
+        c += 1;
+    }
+    while (s[0] != 0) {
+        const index = usize(s[0]) / bytesetDiv;
+        const v = byteset[index] & (usize(1) << @intCast(shiftType, s[0] % bytesetDiv));
+        if (v == 0) {
+            break;
+        }
+        s += 1;
+    }
+    return @ptrToInt(s) - @ptrToInt(a);
+}
+
+extern fn isalpha(c: c_int) bool {
+    return (@bitCast(c_uint, c) | 32) -% 'a' < 26;
+}
+
+extern fn isdigit(c: c_int) bool {
+    return @bitCast(c_uint, c) -% '0' < 10;
+}
+
+extern fn isalnum(c: c_int) bool {
+    return isalpha(c) or isdigit(c);
+}
+
+extern fn islower(c: c_int) bool {
+    return @bitCast(c_uint, c) -% 'a' < 26;
+}
+
+extern fn toupper(c: c_int) c_int {
+    if (islower(c)) return c & 0x5f;
+    return c;
+}
+
+extern fn abs(value: c_int) c_int {
+    return if (value > 0) value else -value;
+}
+
+extern fn strchr(_str: [*]const u8, c: c_int) ?[*]const u8 {
+    // TODO better implementation, this is a naive implementation
+    var str = _str;
+    while (str[0] != @intCast(u8, c)) {
+        if (str[0] == 0) {
+            return null;
+        }
+        str += 1;
+    }
+    return str;
+}
+
 test "strncmp" {
     std.testing.expect(strncmp(c"a", c"b", 1) == -1);
     std.testing.expect(strncmp(c"a", c"c", 1) == -2);
     std.testing.expect(strncmp(c"b", c"a", 1) == 1);
     std.testing.expect(strncmp(c"\xff", c"\x02", 1) == 253);
+}
+
+test "strstr" {
+    std.testing.expect(strcmp(strstr(c"haystack", c"hay").?, c"haystack") == 0);
+    std.testing.expect(strcmp(strstr(c"haystack", c"stack").?, c"stack") == 0);
+    std.testing.expect(strcmp(strstr(c"haystack", c"yst").?, c"ystack") == 0);
+    std.testing.expect(strstr(c"haystack", c"stck") == null);
+}
+
+test "strspn" {
+    std.testing.expect(strspn(c"aabbcd", c"a") == 2);
+    std.testing.expect(strspn(c"aabbcd", c"ab") == 4);
+    std.testing.expect(strspn(c"aabbcd", c"cab") == 5);
+    std.testing.expect(strspn(c"aabbcd", c"b") == 0);
+    std.testing.expect(strspn(c"aabbcd", c"") == 0);
+}
+
+test "isalnum" {
+    std.testing.expect(isalnum('a'));
+    std.testing.expect(isalnum('B'));
+    std.testing.expect(isalnum('9'));
+    std.testing.expect(!isalnum('@'));
+}
+
+test "toupper" {
+    std.testing.expect(toupper('a') == 'A');
+    std.testing.expect(toupper('A') == 'A');
+    std.testing.expect(toupper('@') == '@');
+}
+
+test "abs" {
+    std.testing.expect(abs(6) == 6);
+    std.testing.expect(abs(-6) == 6);
+}
+
+test "strchr" {
+    std.testing.expect(strcmp(strchr(c"haystack", 'h').?, c"haystack") == 0);
+    std.testing.expect(strcmp(strchr(c"haystack", 's').?, c"stack") == 0);
+    std.testing.expect(strchr(c"haystack", 'z') == null);
 }
 
 // Avoid dragging in the runtime safety mechanisms into this .o file,
