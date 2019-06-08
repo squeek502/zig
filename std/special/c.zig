@@ -29,11 +29,29 @@ comptime {
         @export("strspn", strspn, .Strong);
         @export("isalpha", isalpha, .Strong);
         @export("isdigit", isdigit, .Strong);
+        @export("isxdigit", isxdigit, .Strong);
         @export("isalnum", isalnum, .Strong);
+        @export("ispunct", ispunct, .Strong);
+        @export("isgraph", isgraph, .Strong);
+        @export("iscntrl", iscntrl, .Strong);
         @export("islower", islower, .Strong);
+        @export("isupper", isupper, .Strong);
         @export("toupper", toupper, .Strong);
+        @export("tolower", tolower, .Strong);
         @export("abs", abs, .Strong);
+        @export("fabs", fabs, .Strong);
         @export("strchr", strchr, .Strong);
+        @export("pow", pow, .Strong);
+        @export("sin", sin, .Strong);
+        @export("cos", cos, .Strong);
+        @export("tan", tan, .Strong);
+        @export("asin", asin, .Strong);
+        @export("acos", acos, .Strong);
+        @export("atan2", atan2, .Strong);
+        @export("log", log, .Strong);
+        @export("log10", log10, .Strong);
+        @export("log2", log2, .Strong);
+        @export("exp", exp, .Strong);
     }
 }
 
@@ -136,13 +154,42 @@ extern fn islower(c: c_int) bool {
     return @bitCast(c_uint, c) -% 'a' < 26;
 }
 
+extern fn isupper(c: c_int) bool {
+    return @bitCast(c_uint, c) -% 'A' < 26;
+}
+
+extern fn isxdigit(c: c_int) bool {
+    return isdigit(c) or (@bitCast(c_uint, c) | 32) -% 'a' < 6;
+}
+
+extern fn isgraph(c: c_int) bool {
+    return @bitCast(c_uint, c) -% 0x21 < 0x5e;
+}
+
+extern fn ispunct(c: c_int) bool {
+    return isgraph(c) and !isalnum(c);
+}
+
+extern fn iscntrl(c: c_int) bool {
+    return @bitCast(c_uint, c) < 0x20 or c == 0x7f;
+}
+
 extern fn toupper(c: c_int) c_int {
     if (islower(c)) return c & 0x5f;
     return c;
 }
 
+extern fn tolower(c: c_int) c_int {
+    if (isupper(c)) return c | 32;
+    return c;
+}
+
 extern fn abs(value: c_int) c_int {
     return if (value > 0) value else -value;
+}
+
+extern fn fabs(value: f64) f64 {
+    return std.math.fabs(value);
 }
 
 extern fn strchr(_str: [*]const u8, c: c_int) ?[*]const u8 {
@@ -155,6 +202,57 @@ extern fn strchr(_str: [*]const u8, c: c_int) ?[*]const u8 {
         str += 1;
     }
     return str;
+}
+
+extern fn pow(base: f64, exponent: f64) f64 {
+    // TODO does this handle corner cases the same?
+    return std.math.pow(f64, base, exponent);
+}
+
+extern fn sin(x: f64) f64 {
+    return std.math.sin(x);
+}
+
+extern fn cos(x: f64) f64 {
+    return std.math.cos(x);
+}
+
+extern fn tan(x: f64) f64 {
+    return std.math.tan(x);
+}
+
+extern fn asin(x: f64) f64 {
+    return std.math.asin(x);
+}
+
+extern fn acos(x: f64) f64 {
+    return std.math.acos(x);
+}
+
+extern fn atan2(y: f64, x: f64) f64 {
+    return std.math.atan2(y, x);
+}
+
+extern fn log(x: f64) f64 {
+    return std.math.log(x);
+}
+
+extern fn log10(x: f64) f64 {
+    return std.math.log10(x);
+}
+
+extern fn log2(x: f64) f64 {
+    return std.math.log2(x);
+}
+
+extern fn exp(x: f64) f64 {
+    return std.math.exp(x);
+}
+
+extern fn frexp(x: f64, e: *c_int) f64 {
+    const result = std.math.frexp(x);
+    e.* = result.exponent;
+    return result.significand;
 }
 
 test "strncmp" {
@@ -186,10 +284,22 @@ test "isalnum" {
     std.testing.expect(!isalnum('@'));
 }
 
-test "toupper" {
+test "isxdigit" {
+    std.testing.expect(isxdigit('a'));
+    std.testing.expect(isxdigit('B'));
+    std.testing.expect(!isxdigit('Z'));
+    std.testing.expect(isxdigit('0'));
+    std.testing.expect(isxdigit('9'));
+    std.testing.expect(!isxdigit('@'));
+}
+
+test "toupper / tolower" {
     std.testing.expect(toupper('a') == 'A');
     std.testing.expect(toupper('A') == 'A');
     std.testing.expect(toupper('@') == '@');
+    std.testing.expect(tolower('a') == 'a');
+    std.testing.expect(tolower('A') == 'a');
+    std.testing.expect(tolower('@') == '@');
 }
 
 test "abs" {
@@ -201,6 +311,13 @@ test "strchr" {
     std.testing.expect(strcmp(strchr(c"haystack", 'h').?, c"haystack") == 0);
     std.testing.expect(strcmp(strchr(c"haystack", 's').?, c"stack") == 0);
     std.testing.expect(strchr(c"haystack", 'z') == null);
+}
+
+test "frexp" {
+    var n: c_int = 0;
+    const result = frexp(8.0, &n);
+    std.testing.expect(result == 0.5);
+    std.testing.expect(n == 4);
 }
 
 // Avoid dragging in the runtime safety mechanisms into this .o file,
