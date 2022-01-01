@@ -1068,3 +1068,72 @@ test "chown" {
     defer dir.close();
     try dir.chown(null, null);
 }
+
+test "File.metadata" {
+    var tmp = tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("test_file", .{ .read = true });
+    defer file.close();
+
+    const metadata = try file.metadata();
+    try testing.expect(metadata.kind() == .File);
+    try testing.expect(metadata.size() == 0);
+    _ = metadata.time(.accessed);
+}
+
+test "Metadata.permissions" {
+    if (builtin.os.tag == .wasi)
+        return error.SkipZigTest;
+
+    var tmp = tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("test_file", .{ .read = true });
+    defer file.close();
+
+    const metadata = try file.metadata();
+    var permissions = metadata.permissions();
+
+    try testing.expect(!permissions.readonly());
+    permissions.setReadonly(true);
+    try testing.expect(permissions.readonly());
+
+    try file.setPermissions(permissions);
+
+    const new_metadata = try file.metadata();
+    const new_permissions = new_metadata.permissions();
+
+    try testing.expect(new_permissions.readonly());
+}
+
+test "Metadata.permissions unix" {
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi)
+        return error.SkipZigTest;
+
+    var tmp = tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("test_file", .{ .mode = 0o666, .read = true });
+    defer file.close();
+
+    const metadata = try file.metadata();
+    var permissions = metadata.permissions();
+
+    permissions.setReadonly(true);
+    try testing.expect(permissions.readonly());
+    try testing.expect(!permissions.unixHas(.user, .write));
+    permissions.unixSet(.user, .{ .write = true });
+    try testing.expect(!permissions.readonly());
+    try testing.expect(permissions.unixHas(.user, .write));
+    try testing.expect(permissions.mode & 0o400 != 0);
+
+    permissions.setReadonly(true);
+    try file.setPermissions(permissions);
+    permissions = (try file.metadata()).permissions();
+    try testing.expect(permissions.readonly());
+
+    permissions = File.Permissions.unixNew(0o754);
+    try testing.expect(permissions.unixHas(.user, .execute));
+    try testing.expect(!permissions.unixHas(.other, .execute));
+}

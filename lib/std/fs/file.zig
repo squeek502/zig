@@ -385,6 +385,274 @@ pub const File = struct {
         try os.fchown(self.handle, owner, group);
     }
 
+    /// Cross-platform representation of permissions on a file.
+    /// The `readonly` and `setReadonly` are the only methods available across all platforms.
+    /// Unix-only functionality is available through the `unixHas` and `unixSet` methods.
+    pub const Permissions = switch (builtin.os.tag) {
+        .windows => struct {
+            attributes: os.windows.DWORD,
+
+            const Self = @This();
+
+            /// Returns `true` if permissions represent an unwritable file.
+            /// On Unix, `true` is returned only if no class has write permissions.
+            pub fn readonly(self: Self) bool {
+                return self.attributes & os.windows.FILE_ATTRIBUTE_READONLY != 0;
+            }
+
+            /// Sets whether write permissions are provided.
+            /// On Unix, this affects *all* classes. If this is undesired, use `unixSet`
+            /// This method *DOES NOT* set permissions on the filesystem: use `File.setPermissions(permissions)`
+            pub fn setReadonly(self: *Self, read_only: bool) void {
+                if (read_only) {
+                    self.attributes |= os.windows.FILE_ATTRIBUTE_READONLY;
+                } else {
+                    self.attributes &= ~@as(os.windows.DWORD, os.windows.FILE_ATTRIBUTE_READONLY);
+                }
+            }
+        },
+        else => struct {
+            mode: Mode,
+
+            const Self = @This();
+
+            /// Returns `true` if permissions represent an unwritable file.
+            /// On Unix, `true` is returned only if no class has write permissions.
+            pub fn readonly(self: Self) bool {
+                return self.mode & 0o222 == 0;
+            }
+
+            /// Sets whether write permissions are provided.
+            /// On Unix, this affects *all* classes. If this is undesired, use `unixSet`
+            /// This method *DOES NOT* set permissions on the filesystem: use `File.setPermissions(permissions)`
+            pub fn setReadonly(self: *Self, read_only: bool) void {
+                if (read_only) {
+                    self.mode &= ~@as(Mode, 0o222);
+                } else {
+                    self.mode |= @as(Mode, 0o222);
+                }
+            }
+
+            pub const Class = enum(u2) {
+                user = 2,
+                group = 1,
+                other = 0,
+            };
+
+            pub const Permission = enum(u3) {
+                read = 0o4,
+                write = 0o2,
+                execute = 0o1,
+            };
+
+            /// Returns `true` if the chosen class has the selected permission.
+            /// This method is only available on Unix platforms.
+            pub fn unixHas(self: *Self, class: Class, permission: Permission) bool {
+                const mask = @as(Mode, @enumToInt(permission)) << @as(u3, @enumToInt(class)) * 3;
+                return self.mode & mask != 0;
+            }
+
+            /// Sets the permissions for the chosen class. Any permissions set to `null` are left unchanged.
+            /// This method *DOES NOT* set permissions on the filesystem: use `File.setPermissions(permissions)`
+            /// This method is only available on Unix platforms.
+            pub fn unixSet(self: *Self, class: Class, permissions: struct {
+                read: ?bool = null,
+                write: ?bool = null,
+                execute: ?bool = null,
+            }) void {
+                const shift = @as(u3, @enumToInt(class)) * 3;
+                if (permissions.read) |r| {
+                    if (r) {
+                        self.mode |= @as(Mode, 0o4) << shift;
+                    } else {
+                        self.mode &= ~(@as(Mode, 0o4) << shift);
+                    }
+                }
+                if (permissions.write) |w| {
+                    if (w) {
+                        self.mode |= @as(Mode, 0o2) << shift;
+                    } else {
+                        self.mode &= ~(@as(Mode, 0o2) << shift);
+                    }
+                }
+                if (permissions.execute) |x| {
+                    if (x) {
+                        self.mode |= @as(Mode, 0o1) << shift;
+                    } else {
+                        self.mode &= ~(@as(Mode, 0o1) << shift);
+                    }
+                }
+            }
+
+            /// Returns a `Permissions` struct representing the permissions from the passed mode.
+            /// This method is only available on Unix platforms.
+            pub fn unixNew(new_mode: Mode) Self {
+                return Self{
+                    .mode = new_mode,
+                };
+            }
+        },
+    };
+
+    pub const SetPermissionsError = if (is_windows) error{AccessDenied} || os.UnexpectedError else ChmodError;
+
+    /// Sets permissions according to the provided `Permissions` struct.
+    /// This method is *NOT* available on WASI
+    pub fn setPermissions(self: File, permissions: Permissions) SetPermissionsError!void {
+        switch (builtin.os.tag) {
+            .windows => {
+                var io_status_block: windows.IO_STATUS_BLOCK = undefined;
+                var info = windows.FILE_BASIC_INFORMATION{
+                    .CreationTime = 0,
+                    .LastAccessTime = 0,
+                    .LastWriteTime = 0,
+                    .ChangeTime = 0,
+                    .FileAttributes = permissions.attributes,
+                };
+                const rc = windows.ntdll.NtSetInformationFile(
+                    self.handle,
+                    &io_status_block,
+                    &info,
+                    @sizeOf(windows.FILE_BASIC_INFORMATION),
+                    .FileBasicInformation,
+                );
+                switch (rc) {
+                    .SUCCESS => return,
+                    .INVALID_HANDLE => unreachable,
+                    .ACCESS_DENIED => return error.AccessDenied,
+                    else => return windows.unexpectedStatus(rc),
+                }
+            },
+            .wasi => @compileError("Unsupported OS"), // TODO Waiting for wasi-filesystem to support chmod
+            else => {
+                try self.chmod(permissions.mode);
+            },
+        }
+    }
+
+    /// Cross-platform representation of file metadata.
+    /// Can be obtained with `File.metadata()`
+    pub const Metadata = switch (builtin.os.tag) {
+        .windows => struct {
+            attributes: windows.DWORD,
+            reparse_tag: windows.DWORD,
+            _size: u64,
+            _atime: i128,
+            _mtime: i128,
+            _ctime: i128,
+
+            const Self = @This();
+
+            /// Returns the size of the file
+            pub fn size(self: Self) u64 {
+                return self._size;
+            }
+
+            /// Returns a `Permissions` struct, representing the permissions on the file
+            pub fn permissions(self: Self) Permissions {
+                return Permissions{ .attributes = self.attributes };
+            }
+
+            /// Returns the `Kind` of the file.
+            /// On Windows, returns: `.File`, `.Directory`, `.SymLink` or `.Unknown`
+            pub fn kind(self: Self) Kind {
+                if (self.attributes & windows.FILE_ATTRIBUTE_REPARSE_POINT != 0) {
+                    if (self.reparse_tag & 0x20000000 != 0) {
+                        return .SymLink;
+                    }
+                } else if (self.attributes & windows.FILE_ATTRIBUTE_DIRECTORY != 0) {
+                    return .Directory;
+                } else {
+                    return .File;
+                }
+                return .Unknown;
+            }
+
+            /// Returns the time the file was accessed, modified, or created in nanoseconds since UTC 1970-01-01
+            pub fn time(self: Self, event: enum { accessed, modified, created }) i128 {
+                return switch (event) {
+                    .accessed => self._atime,
+                    .modified => self._mtime,
+                    .created => self._ctime,
+                };
+            }
+        },
+        else => struct {
+            stat: Stat,
+
+            const Self = @This();
+
+            /// Returns the size of the file
+            pub fn size(self: Self) u64 {
+                return self.stat.size;
+            }
+
+            /// Returns a `Permissions` struct, representing the permissions on the file
+            pub fn permissions(self: Self) Permissions {
+                return Permissions{ .mode = self.stat.mode };
+            }
+
+            /// Returns the `Kind` of file.
+            /// On Windows, returns: `.File`, `.Directory`, `.SymLink` or `.Unknown`
+            pub fn kind(self: Self) Kind {
+                return self.stat.kind;
+            }
+
+            /// Returns the time the file was accessed, modified, or created in nanoseconds since UTC 1970-01-01
+            pub fn time(self: Self, event: enum { accessed, modified, created }) i128 {
+                return switch (event) {
+                    .accessed => self.stat.atime,
+                    .modified => self.stat.mtime,
+                    .created => self.stat.ctime,
+                };
+            }
+        },
+    };
+
+    pub const MetadataError = StatError;
+
+    /// Returns a `Metadata` struct, representing the permissions on the file
+    pub fn metadata(self: File) MetadataError!Metadata {
+        switch (builtin.os.tag) {
+            .windows => {
+                var io_status_block: windows.IO_STATUS_BLOCK = undefined;
+                var info: windows.FILE_ALL_INFORMATION = undefined;
+                const rc = windows.ntdll.NtQueryInformationFile(self.handle, &io_status_block, &info, @sizeOf(windows.FILE_ALL_INFORMATION), .FileAllInformation);
+                switch (rc) {
+                    .SUCCESS => {},
+                    .BUFFER_OVERFLOW => {},
+                    .INVALID_PARAMETER => unreachable,
+                    .ACCESS_DENIED => return error.AccessDenied,
+                    else => return windows.unexpectedStatus(rc),
+                }
+
+                const reparse_tag: windows.DWORD = blk: {
+                    if (info.BasicInformation.FileAttributes & windows.FILE_ATTRIBUTE_REPARSE_POINT != 0) {
+                        var reparse_buf: [windows.MAXIMUM_REPARSE_DATA_BUFFER_SIZE]u8 = undefined;
+                        try windows.DeviceIoControl(self.handle, windows.FSCTL_GET_REPARSE_POINT, null, reparse_buf[0..]);
+                        const reparse_struct = @ptrCast(*const windows.REPARSE_DATA_BUFFER, @alignCast(@alignOf(windows.REPARSE_DATA_BUFFER), &reparse_buf[0]));
+                        break :blk reparse_struct.ReparseTag;
+                    }
+                    break :blk 0;
+                };
+
+                return Metadata{
+                    .attributes = info.BasicInformation.FileAttributes,
+                    .reparse_tag = reparse_tag,
+                    ._size = @bitCast(u64, info.StandardInformation.EndOfFile),
+                    ._atime = windows.fromSysTime(info.BasicInformation.LastAccessTime),
+                    ._mtime = windows.fromSysTime(info.BasicInformation.LastWriteTime),
+                    ._ctime = windows.fromSysTime(info.BasicInformation.CreationTime),
+                };
+            },
+            else => {
+                return Metadata{
+                    .stat = try self.stat(),
+                };
+            },
+        }
+    }
+
     pub const UpdateTimesError = os.FutimensError || windows.SetFileTimeError;
 
     /// The underlying file system may have a different granularity than nanoseconds,
