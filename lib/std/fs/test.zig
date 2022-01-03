@@ -1105,6 +1105,10 @@ test "Metadata.permissions" {
     const new_permissions = new_metadata.permissions();
 
     try testing.expect(new_permissions.readonly());
+
+    // Must set it back to non-read-only in order to delete it
+    permissions.setReadonly(false);
+    try file.setPermissions(permissions);
 }
 
 test "Metadata.permissions unix" {
