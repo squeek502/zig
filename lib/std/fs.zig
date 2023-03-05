@@ -1481,6 +1481,37 @@ pub const Dir = struct {
         }
     }
 
+    fn openDirAccessMaskWWrapper (self: Dir, sub_path: []const u8, access_mask: u32, no_follow: bool) OpenError!Dir {
+        const w = os.windows;
+        var end_index: usize = sub_path.len;
+
+        return while (true) {
+            const sub_path_w = try w.sliceToPrefixedFileW(sub_path[0..end_index]);
+            const result = self.openDirAccessMaskW(sub_path_w.span().ptr, access_mask, .{
+                .no_follow = no_follow,
+                .create = true,
+            }) catch |err| switch (err) {
+                error.FileNotFound => {
+                    // march end_index backward until next path component
+                    while (true) {
+                        if (end_index == 0) return err;
+                        end_index -= 1;
+                        if (path.isSep(sub_path[end_index])) break;
+                    }
+                    continue;
+                },
+                else => return err
+            };
+
+            if (end_index == sub_path.len) return result;
+            // march end_index forward until next path component
+            while (true) {
+                end_index += 1;
+                if (end_index == sub_path.len or path.isSep(sub_path[end_index])) break;
+            }
+        };
+    }
+
     /// This function performs `makePath`, followed by `openDir`.
     /// If supported by the OS, this operation is atomic. It is not atomic on
     /// all operating systems.
@@ -1488,14 +1519,10 @@ pub const Dir = struct {
         return switch(builtin.os.tag) {
             .windows => {
                 const w = os.windows;
-                const sub_path_w = try w.sliceToPrefixedFileW(sub_path);
-
                 const base_flags = w.STANDARD_RIGHTS_READ | w.FILE_READ_ATTRIBUTES | w.FILE_READ_EA |
                     w.SYNCHRONIZE | w.FILE_TRAVERSE;
-                return self.openDirAccessMaskW(sub_path_w.span().ptr, base_flags, .{
-                    .no_follow = open_dir_options.no_follow,
-                    .create = true,
-                });
+
+                return self.openDirAccessMaskWWrapper(sub_path, base_flags, open_dir_options.no_follow);
             },
             else => {
                 return self.openDir(sub_path, open_dir_options) catch {
@@ -1513,15 +1540,11 @@ pub const Dir = struct {
         return switch(builtin.os.tag) {
             .windows => {
                 const w = os.windows;
-                const sub_path_w = try w.sliceToPrefixedFileW(sub_path);
-
                 const base_flags = w.STANDARD_RIGHTS_READ | w.FILE_READ_ATTRIBUTES | w.FILE_READ_EA |
                     w.SYNCHRONIZE | w.FILE_TRAVERSE | w.FILE_LIST_DIRECTORY;
+                
                 return IterableDir{
-                    .dir = try self.openDirAccessMaskW(sub_path_w.span().ptr, base_flags, .{
-                        .no_follow = open_dir_options.no_follow,
-                        .create = true,
-                    }),
+                    .dir = try self.openDirAccessMaskWWrapper(sub_path, base_flags, open_dir_options.no_follow)
                 };
             },
             else => {
@@ -1851,6 +1874,7 @@ pub const Dir = struct {
             null,
             0,
         );
+        
         switch (rc) {
             .SUCCESS => return result,
             .OBJECT_NAME_INVALID => unreachable,
