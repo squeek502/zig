@@ -475,6 +475,13 @@ test "file operations on directories" {
     dir.close();
 }
 
+test "makeOpenPath parent dirs do not exist" {
+    if (builtin.os.tag == .wasi) return error.SkipZigTest;
+
+    var dir = try fs.cwd().makeOpenPath("root_dir/parent_dir/some_dir", .{});
+    defer dir.close();
+}
+
 test "deleteDir" {
     var tmp_dir = tmpDir(.{});
     defer tmp_dir.cleanup();
