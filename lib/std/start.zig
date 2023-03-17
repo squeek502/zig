@@ -214,7 +214,7 @@ extern "kernel32" fn ExitProcess(exit_code: u32) callconv(.C) noreturn;
 /// into being a sane environment
 inline fn setupWindows() void {
     if (std.options.windows_force_utf8_codepage) {
-        _ = std.os.windows.kernel32.SetConsoleOutputCP(65001); // use UTF-8 codepage
+        std.os.windows.setConsoleCodePage(std.os.windows.CP_UTF8, .output) catch {};
     }
 }
 
