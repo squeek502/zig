@@ -2090,6 +2090,72 @@ pub fn loadWinsockExtensionFunction(comptime T: type, sock: ws2_32.SOCKET, guid:
     return function;
 }
 
+/// https://github.com/microsoft/terminal/blob/931aa8c87e5f5dbd28cf838bee450d082474a732/dep/Console/conmsgl1.h#L117-L120
+const CONSOLE_MSG_HEADER = extern struct {
+    ApiNumber: ULONG,
+    ApiDescriptorSize: ULONG,
+};
+
+pub const CP_UTF8 = 65001;
+
+/// Like the kernel32 functions SetConsoleOutputCP/SetConsoleCP, but implemented using ntdll.NtDeviceIoControlFile.
+pub fn setConsoleCodePage(code_page: ULONG, direction: enum { input, output }) DeviceIoControlError!void {
+    const console_handle = peb().ProcessParameters.ConsoleHandle;
+    // The final control code should be 0x00500016 which means that the function is 0x16 >> 2 or 5.
+    const console_set_cp_function = 5;
+    // Note: The NtDeviceIoControlFile call will fail with 0xc0000010 ['Incorrect function.'] if the method is
+    //       anything other than METHOD_OUT_DIRECT.
+    // TODO: Understand why METHOD_OUT_DIRECT is required.
+    const io_control_code = comptime CTL_CODE(FILE_DEVICE_CONSOLE, console_set_cp_function, .METHOD_OUT_DIRECT, FILE_ANY_ACCESS);
+    comptime std.debug.assert(io_control_code == 0x00500016);
+
+    // This is actually one value in an enum but we just care about this value
+    // https://github.com/microsoft/terminal/blob/931aa8c87e5f5dbd28cf838bee450d082474a732/dep/Console/conmsgl2.h#L152-L152
+    // https://github.com/microsoft/terminal/blob/931aa8c87e5f5dbd28cf838bee450d082474a732/dep/Console/conmsgl1.h#L29-L30
+    const ConsolepSetCP = (2 << 24) + 4;
+
+    // https://github.com/microsoft/terminal/blob/931aa8c87e5f5dbd28cf838bee450d082474a732/dep/Console/conmsgl2.h#L52-L55
+    const CONSOLE_SETCP_MSG = extern struct {
+        CodePage: ULONG,
+        Output: bool,
+    };
+
+    // https://github.com/microsoft/terminal/blob/931aa8c87e5f5dbd28cf838bee450d082474a732/dep/Console/conmsgl2.h#L196-L201
+    const CONSOLE_MSG_L2 = extern struct {
+        Header: CONSOLE_MSG_HEADER,
+        // This is actually a union of other types but we just care about this for now
+        Body: CONSOLE_SETCP_MSG,
+    };
+
+    // The _unknown fields of this struct have unknown usage/importance/size. These values were
+    // obtained by looking at the `input` memory passed to the NtDeviceIoControlFile call
+    // that occurs from a successful call of `kernel32.SetConsoleOutputCP()`.
+    const UNKNOWN_IOCTL_INPUT = extern struct {
+        _unknown1: u32 = 0,
+        _unknown2: u32 = 0,
+        _unknown3: u32 = 1,
+        _unknown4: u32 = 1,
+        _unknown5: u32 = 0x10,
+        _unknown6: u32 = 0x20,
+        header: *CONSOLE_MSG_HEADER,
+        _unknown7: u32 = 0x8,
+        _unknown8: u32 = 0,
+        body: *CONSOLE_SETCP_MSG,
+    };
+
+    // Note: These must be var to ensure the memory gets put on the stack.
+    var console_msg = CONSOLE_MSG_L2{
+        .Header = .{ .ApiNumber = ConsolepSetCP, .ApiDescriptorSize = @sizeOf(CONSOLE_SETCP_MSG) },
+        .Body = .{ .CodePage = code_page, .Output = direction == .output },
+    };
+    var input = UNKNOWN_IOCTL_INPUT{
+        .header = &console_msg.Header,
+        .body = &console_msg.Body,
+    };
+
+    return DeviceIoControl(console_handle, io_control_code, std.mem.asBytes(&input), null);
+}
+
 /// Call this when you made a windows DLL call or something that does SetLastError
 /// and you get an unexpected error.
 pub fn unexpectedError(err: Win32Error) std.os.UnexpectedError {
