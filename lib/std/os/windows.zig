@@ -939,8 +939,35 @@ pub fn DeleteFile(sub_path_w: []const u16, options: DeleteFileOptions) DeleteFil
     }
     defer CloseHandle(tmp_handle);
 
-    if (comptime builtin.target.os.version_range.windows.min.isAtLeast(.win10_rs1)) {
-        // Deletion with posix semantics.
+    const use_posix_semantics = supports_posix_semantics: {
+        if (!comptime builtin.target.os.version_range.windows.min.isAtLeast(.win10_rs1)) {
+            break :supports_posix_semantics false;
+        }
+
+        // We provide exactly a FILE_FS_ATTRIBUTE_INFORMATION even though
+        // the FileSystemName would need extra bytes to write into because
+        // we don't care about the FileSystemName and only want the flags.
+        // In theory FILE_FS_VOLUME_FLAGS_INFORMATION could be used here but
+        // it was returning STATUS_ACCESS_DENIED (maybe it needs admin permissions?)
+        var volume_info: FILE_FS_ATTRIBUTE_INFORMATION = undefined;
+        rc = ntdll.NtQueryVolumeInformationFile(
+            tmp_handle,
+            &io,
+            &volume_info,
+            @sizeOf(FILE_FS_ATTRIBUTE_INFORMATION),
+            .FileFsAttributeInformation,
+        );
+        switch (rc) {
+            // Buffer overflow is expected since we don't provide enough space for the FileSystemName
+            .SUCCESS, .BUFFER_OVERFLOW => {},
+            else => return unexpectedStatus(rc),
+        }
+
+        break :supports_posix_semantics volume_info.FileSystemAttributes & FILE_SUPPORTS_POSIX_UNLINK_RENAME != 0;
+    };
+
+    if (use_posix_semantics) {
+        // Deletion with posix semantics if the filesystem supports it.
         var info = FILE_DISPOSITION_INFORMATION_EX{
             .Flags = FILE_DISPOSITION_DELETE |
                 FILE_DISPOSITION_POSIX_SEMANTICS |
@@ -2711,6 +2738,13 @@ pub const FILE_FS_DEVICE_INFORMATION = extern struct {
     Characteristics: ULONG,
 };
 
+pub const FILE_FS_ATTRIBUTE_INFORMATION = extern struct {
+    FileSystemAttributes: ULONG,
+    MaximumComponentNameLength: LONG,
+    FileSystemNameLength: ULONG,
+    FileSystemName: [1]WCHAR,
+};
+
 pub const FS_INFORMATION_CLASS = enum(c_int) {
     FileFsVolumeInformation = 1,
     FileFsLabelInformation,
@@ -3172,6 +3206,35 @@ pub const FILE_FLAG_RANDOM_ACCESS = 0x10000000;
 pub const FILE_FLAG_SESSION_AWARE = 0x00800000;
 pub const FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000;
 pub const FILE_FLAG_WRITE_THROUGH = 0x80000000;
+
+// https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumeinformationa
+pub const FILE_CASE_SENSITIVE_SEARCH = 0x00000001;
+pub const FILE_CASE_PRESERVED_NAMES = 0x00000002;
+pub const FILE_UNICODE_ON_DISK = 0x00000004;
+pub const FILE_PERSISTENT_ACLS = 0x00000008;
+pub const FILE_FILE_COMPRESSION = 0x00000010;
+pub const FILE_VOLUME_QUOTAS = 0x00000020;
+pub const FILE_SUPPORTS_SPARSE_FILES = 0x00000040;
+pub const FILE_SUPPORTS_REPARSE_POINTS = 0x00000080;
+pub const FILE_SUPPORTS_REMOTE_STORAGE = 0x00000100;
+pub const FILE_RETURNS_CLEANUP_RESULT_INFO = 0x00000200;
+pub const FILE_SUPPORTS_POSIX_UNLINK_RENAME = 0x00000400;
+pub const FILE_VOLUME_IS_COMPRESSED = 0x00008000;
+pub const FILE_SUPPORTS_OBJECT_IDS = 0x00010000;
+pub const FILE_SUPPORTS_ENCRYPTION = 0x00020000;
+pub const FILE_NAMED_STREAMS = 0x00040000;
+pub const FILE_READ_ONLY_VOLUME = 0x00080000;
+pub const FILE_SEQUENTIAL_WRITE_ONCE = 0x00100000;
+pub const FILE_SUPPORTS_TRANSACTIONS = 0x00200000;
+pub const FILE_SUPPORTS_HARD_LINKS = 0x00400000;
+pub const FILE_SUPPORTS_EXTENDED_ATTRIBUTES = 0x00800000;
+pub const FILE_SUPPORTS_OPEN_BY_FILE_ID = 0x01000000;
+pub const FILE_SUPPORTS_USN_JOURNAL = 0x02000000;
+pub const FILE_SUPPORTS_INTEGRITY_STREAMS = 0x04000000;
+pub const FILE_SUPPORTS_BLOCK_REFCOUNTING = 0x08000000;
+pub const FILE_SUPPORTS_SPARSE_VDL = 0x10000000;
+pub const FILE_DAX_VOLUME = 0x20000000;
+pub const FILE_SUPPORTS_GHOSTING = 0x40000000;
 
 pub const RECT = extern struct {
     left: LONG,
