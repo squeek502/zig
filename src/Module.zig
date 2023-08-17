@@ -5029,7 +5029,8 @@ fn scanDecl(iter: *ScanDeclIter, decl_sub_index: usize, flags: u4) Allocator.Err
                 if (!comp.bin_file.options.is_test) break :blk false;
                 if (decl_pkg != mod.main_pkg) break :blk false;
                 if (comp.test_filter) |test_filter| {
-                    if (mem.indexOf(u8, ip.stringToSlice(decl_name), test_filter) == null) {
+                    const fully_qualified_name = try new_decl.getFullyQualifiedName(mod);
+                    if (mem.indexOf(u8, ip.stringToSlice(fully_qualified_name), test_filter) == null) {
                         break :blk false;
                     }
                 }
