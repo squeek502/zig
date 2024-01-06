@@ -896,6 +896,7 @@ pub fn openFileW(self: Dir, sub_path_w: []const u16, flags: File.OpenFlags) File
                 (if (flags.isWrite()) @as(u32, w.GENERIC_WRITE) else 0),
             .creation = w.FILE_OPEN,
             .io_mode = flags.intended_io_mode,
+            .filter = if (!flags.isWrite() and flags.allow_directory) .any else .non_dir_only,
         }),
         .capable_io_mode = std.io.default_mode,
         .intended_io_mode = flags.intended_io_mode,
@@ -1057,6 +1058,7 @@ pub fn createFileW(self: Dir, sub_path_w: []const u16, flags: File.CreateFlags) 
             else
                 @as(u32, w.FILE_OPEN_IF),
             .io_mode = flags.intended_io_mode,
+            .filter = .non_dir_only,
         }),
         .capable_io_mode = std.io.default_mode,
         .intended_io_mode = flags.intended_io_mode,
@@ -1791,7 +1793,7 @@ pub fn readFileAllocOptions(
     comptime alignment: u29,
     comptime optional_sentinel: ?u8,
 ) !(if (optional_sentinel) |s| [:s]align(alignment) u8 else []align(alignment) u8) {
-    var file = try self.openFile(file_path, .{});
+    var file = try self.openFile(file_path, .{ .allow_directory = false });
     defer file.close();
 
     // If the file size doesn't fit a usize it'll be certainly greater than

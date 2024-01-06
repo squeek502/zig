@@ -722,9 +722,11 @@ test "file operations on directories" {
                     try testing.expectError(error.IsDir, ctx.dir.readFileAlloc(testing.allocator, test_dir_name, std.math.maxInt(usize)));
                 },
             }
-            // Note: The `.mode = .read_write` is necessary to ensure the error occurs on all platforms.
-            // TODO: Add a read-only test as well, see https://github.com/ziglang/zig/issues/5732
+            // Note: The `.mode = .read_write` is one way to ensure the error occurs on all platforms.
             try testing.expectError(error.IsDir, ctx.dir.openFile(test_dir_name, .{ .mode = .read_write }));
+
+            // The other way is to set .allow_directory = false
+            try testing.expectError(error.IsDir, ctx.dir.openFile(test_dir_name, .{ .allow_directory = false }));
 
             if (ctx.path_type == .absolute and comptime PathType.absolute.isSupported(builtin.os)) {
                 try testing.expectError(error.IsDir, fs.createFileAbsolute(test_dir_name, .{}));

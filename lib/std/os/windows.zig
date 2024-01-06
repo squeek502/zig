@@ -50,16 +50,14 @@ pub const OpenFileOptions = struct {
     share_access: ULONG = FILE_SHARE_WRITE | FILE_SHARE_READ | FILE_SHARE_DELETE,
     creation: ULONG,
     io_mode: std.io.ModeOverride,
-    /// If true, tries to open path as a directory.
-    /// Defaults to false.
-    filter: Filter = .file_only,
+    filter: Filter = .any,
     /// If false, tries to open path as a reparse point without dereferencing it.
     /// Defaults to true.
     follow_symlinks: bool = true,
 
     pub const Filter = enum {
         /// Causes `OpenFile` to return `error.IsDir` if the opened handle would be a directory.
-        file_only,
+        non_dir_only,
         /// Causes `OpenFile` to return `error.NotDir` if the opened handle would be a file.
         dir_only,
         /// `OpenFile` does not discriminate between opening files and directories.
@@ -68,10 +66,10 @@ pub const OpenFileOptions = struct {
 };
 
 pub fn OpenFile(sub_path_w: []const u16, options: OpenFileOptions) OpenError!HANDLE {
-    if (mem.eql(u16, sub_path_w, &[_]u16{'.'}) and options.filter == .file_only) {
+    if (mem.eql(u16, sub_path_w, &[_]u16{'.'}) and options.filter == .non_dir_only) {
         return error.IsDir;
     }
-    if (mem.eql(u16, sub_path_w, &[_]u16{ '.', '.' }) and options.filter == .file_only) {
+    if (mem.eql(u16, sub_path_w, &[_]u16{ '.', '.' }) and options.filter == .non_dir_only) {
         return error.IsDir;
     }
 
@@ -97,7 +95,7 @@ pub fn OpenFile(sub_path_w: []const u16, options: OpenFileOptions) OpenError!HAN
     var io: IO_STATUS_BLOCK = undefined;
     const blocking_flag: ULONG = if (options.io_mode == .blocking) FILE_SYNCHRONOUS_IO_NONALERT else 0;
     const file_or_dir_flag: ULONG = switch (options.filter) {
-        .file_only => FILE_NON_DIRECTORY_FILE,
+        .non_dir_only => FILE_NON_DIRECTORY_FILE,
         .dir_only => FILE_DIRECTORY_FILE,
         .any => 0,
     };
@@ -733,7 +731,7 @@ pub fn CreateSymbolicLink(
         .dir = dir,
         .creation = FILE_CREATE,
         .io_mode = .blocking,
-        .filter = if (is_directory) .dir_only else .file_only,
+        .filter = if (is_directory) .dir_only else .non_dir_only,
     }) catch |err| switch (err) {
         error.IsDir => return error.PathAlreadyExists,
         error.NotDir => unreachable,

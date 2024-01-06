@@ -79,6 +79,20 @@ pub const Lock = enum {
 pub const OpenFlags = struct {
     mode: OpenMode = .read_only,
 
+    /// Sets whether or not the path being opened is allowed to refer
+    /// to a directory. If set to false, attempting to open a path that
+    /// refers to a directory will fail with `error.IsDir`.
+    ///
+    /// On Windows, this is implemented without any addition syscalls by
+    /// using the FILE_NON_DIRECTORY_FILE flag in NtCreateFile's CreateOptions.
+    /// On other platforms, this is implemented with an additional `stat`
+    /// syscall to determine if the path refers to a directory.
+    ///
+    /// If `mode` is set to `write_only` or `read_write`, this option
+    /// is implicitly `false` (and does not require an extra `stat` call
+    /// on non-Windows platforms).
+    allow_directory: bool = true,
+
     /// Open the file with an advisory lock to coordinate with other processes
     /// accessing it at the same time. An exclusive lock will prevent other
     /// processes from acquiring a lock. A shared lock will prevent other

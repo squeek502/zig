@@ -1697,7 +1697,12 @@ fn openOptionsFromFlagsWindows(flags: u32) windows.OpenFileOptions {
         access_mask |= w.GENERIC_READ | w.GENERIC_WRITE;
     }
 
-    const filter: windows.OpenFileOptions.Filter = if (flags & O.DIRECTORY != 0) .dir_only else .file_only;
+    const filter: windows.OpenFileOptions.Filter = if (flags & O.DIRECTORY != 0)
+        .dir_only
+    else if (flags & O.RDWR != 0 or flags & O.WRONLY != 0)
+        .non_dir_only
+    else
+        .any;
     const follow_symlinks: bool = flags & O.NOFOLLOW == 0;
 
     const creation: w.ULONG = blk: {
