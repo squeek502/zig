@@ -712,25 +712,31 @@ test "file operations on directories" {
 
             try testing.expectError(error.IsDir, ctx.dir.createFile(test_dir_name, .{}));
             try testing.expectError(error.IsDir, ctx.dir.deleteFile(test_dir_name));
-            switch (builtin.os.tag) {
-                // no error when reading a directory.
-                .dragonfly, .netbsd => {},
-                // Currently, WASI will return error.Unexpected (via ENOTCAPABLE) when attempting fd_read on a directory handle.
-                // TODO: Re-enable on WASI once https://github.com/bytecodealliance/wasmtime/issues/1935 is resolved.
-                .wasi => {},
-                else => {
-                    try testing.expectError(error.IsDir, ctx.dir.readFileAlloc(testing.allocator, test_dir_name, std.math.maxInt(usize)));
-                },
-            }
-            // Note: The `.mode = .read_write` is one way to ensure the error occurs on all platforms.
-            try testing.expectError(error.IsDir, ctx.dir.openFile(test_dir_name, .{ .mode = .read_write }));
 
-            // The other way is to set .allow_directory = false
+            // Opening directories should always be disallowed when .allow_directory = false
             try testing.expectError(error.IsDir, ctx.dir.openFile(test_dir_name, .{ .allow_directory = false }));
+
+            // Opening with write permissions should implicitly disallow opening directories,
+            // even if .allow_directory is true.
+            try testing.expectError(error.IsDir, ctx.dir.openFile(test_dir_name, .{ .mode = .read_write, .allow_directory = true }));
+            try testing.expectError(error.IsDir, ctx.dir.openFile(test_dir_name, .{ .mode = .write_only, .allow_directory = true }));
+
+            // The Dir.readFile functions also imply that directories are not allowed
+            var read_buf: [16]u8 = undefined;
+            try testing.expectError(error.IsDir, ctx.dir.readFile(test_dir_name, &read_buf));
+            try testing.expectError(error.IsDir, ctx.dir.readFileAlloc(testing.allocator, test_dir_name, std.math.maxInt(usize)));
 
             if (ctx.path_type == .absolute and comptime PathType.absolute.isSupported(builtin.os)) {
                 try testing.expectError(error.IsDir, fs.createFileAbsolute(test_dir_name, .{}));
                 try testing.expectError(error.IsDir, fs.deleteFileAbsolute(test_dir_name));
+
+                // Opening directories should always be disallowed when .allow_directory = false
+                try testing.expectError(error.IsDir, fs.openFileAbsolute(test_dir_name, .{ .allow_directory = false }));
+
+                // Opening with write permissions should implicitly disallow opening directories,
+                // even if .allow_directory is true.
+                try testing.expectError(error.IsDir, fs.openFileAbsolute(test_dir_name, .{ .mode = .read_write, .allow_directory = true }));
+                try testing.expectError(error.IsDir, fs.openFileAbsolute(test_dir_name, .{ .mode = .write_only, .allow_directory = true }));
             }
 
             // ensure the directory still exists as a sanity check

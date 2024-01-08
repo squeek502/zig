@@ -982,6 +982,15 @@ pub fn updateTimes(
 /// Reads all the bytes from the current position to the end of the file.
 /// On success, caller owns returned buffer.
 /// If the file is larger than `max_bytes`, returns `error.FileTooBig`.
+///
+/// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
+/// - On Linux, it will error with error.IsDir
+/// - On MacOS, it will error with error.IsDir
+/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
+///   filesystem and/or system settings
+/// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
+///   see https://github.com/bytecodealliance/wasmtime/issues/1935
 pub fn readToEndAlloc(self: File, allocator: Allocator, max_bytes: usize) ![]u8 {
     return self.readToEndAllocOptions(allocator, max_bytes, null, @alignOf(u8), null);
 }
@@ -992,6 +1001,15 @@ pub fn readToEndAlloc(self: File, allocator: Allocator, max_bytes: usize) ![]u8 
 /// If `size_hint` is specified the initial buffer size is calculated using
 /// that value, otherwise an arbitrary value is used instead.
 /// Allows specifying alignment and a sentinel value.
+///
+/// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
+/// - On Linux, it will error with error.IsDir
+/// - On MacOS, it will error with error.IsDir
+/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
+///   filesystem and/or system settings
+/// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
+///   see https://github.com/bytecodealliance/wasmtime/issues/1935
 pub fn readToEndAllocOptions(
     self: File,
     allocator: Allocator,
@@ -1025,6 +1043,14 @@ pub fn readToEndAllocOptions(
 pub const ReadError = posix.ReadError;
 pub const PReadError = posix.PReadError;
 
+/// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
+/// - On Linux, it will error with error.IsDir
+/// - On MacOS, it will error with error.IsDir
+/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
+///   filesystem and/or system settings
+/// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
+///   see https://github.com/bytecodealliance/wasmtime/issues/1935
 pub fn read(self: File, buffer: []u8) ReadError!usize {
     if (is_windows) {
         return windows.ReadFile(self.handle, buffer, null, self.intended_io_mode);
@@ -1039,6 +1065,15 @@ pub fn read(self: File, buffer: []u8) ReadError!usize {
 
 /// Returns the number of bytes read. If the number read is smaller than `buffer.len`, it
 /// means the file reached the end. Reaching the end of a file is not an error condition.
+///
+/// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
+/// - On Linux, it will error with error.IsDir
+/// - On MacOS, it will error with error.IsDir
+/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
+///   filesystem and/or system settings
+/// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
+///   see https://github.com/bytecodealliance/wasmtime/issues/1935
 pub fn readAll(self: File, buffer: []u8) ReadError!usize {
     var index: usize = 0;
     while (index != buffer.len) {
@@ -1051,6 +1086,15 @@ pub fn readAll(self: File, buffer: []u8) ReadError!usize {
 
 /// On Windows, this function currently does alter the file pointer.
 /// https://github.com/ziglang/zig/issues/12783
+///
+/// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
+/// - On Linux, it will error with error.IsDir
+/// - On MacOS, it will error with error.IsDir
+/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
+///   filesystem and/or system settings
+/// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
+///   see https://github.com/bytecodealliance/wasmtime/issues/1935
 pub fn pread(self: File, buffer: []u8, offset: u64) PReadError!usize {
     if (is_windows) {
         return windows.ReadFile(self.handle, buffer, offset, self.intended_io_mode);
@@ -1067,6 +1111,15 @@ pub fn pread(self: File, buffer: []u8, offset: u64) PReadError!usize {
 /// means the file reached the end. Reaching the end of a file is not an error condition.
 /// On Windows, this function currently does alter the file pointer.
 /// https://github.com/ziglang/zig/issues/12783
+///
+/// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
+/// - On Linux, it will error with error.IsDir
+/// - On MacOS, it will error with error.IsDir
+/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
+///   filesystem and/or system settings
+/// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
+///   see https://github.com/bytecodealliance/wasmtime/issues/1935
 pub fn preadAll(self: File, buffer: []u8, offset: u64) PReadError!usize {
     var index: usize = 0;
     while (index != buffer.len) {
@@ -1078,6 +1131,15 @@ pub fn preadAll(self: File, buffer: []u8, offset: u64) PReadError!usize {
 }
 
 /// See https://github.com/ziglang/zig/issues/7699
+///
+/// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
+/// - On Linux, it will error with error.IsDir
+/// - On MacOS, it will error with error.IsDir
+/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
+///   filesystem and/or system settings
+/// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
+///   see https://github.com/bytecodealliance/wasmtime/issues/1935
 pub fn readv(self: File, iovecs: []const posix.iovec) ReadError!usize {
     if (is_windows) {
         // TODO improve this to use ReadFileScatter
@@ -1106,6 +1168,15 @@ pub fn readv(self: File, iovecs: []const posix.iovec) ReadError!usize {
 ///   when the length is zero.
 ///
 /// Related open issue: https://github.com/ziglang/zig/issues/7699
+///
+/// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
+/// - On Linux, it will error with error.IsDir
+/// - On MacOS, it will error with error.IsDir
+/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
+///   filesystem and/or system settings
+/// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
+///   see https://github.com/bytecodealliance/wasmtime/issues/1935
 pub fn readvAll(self: File, iovecs: []posix.iovec) ReadError!usize {
     if (iovecs.len == 0) return 0;
 
@@ -1138,6 +1209,15 @@ pub fn readvAll(self: File, iovecs: []posix.iovec) ReadError!usize {
 /// See https://github.com/ziglang/zig/issues/7699
 /// On Windows, this function currently does alter the file pointer.
 /// https://github.com/ziglang/zig/issues/12783
+///
+/// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
+/// - On Linux, it will error with error.IsDir
+/// - On MacOS, it will error with error.IsDir
+/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
+///   filesystem and/or system settings
+/// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
+///   see https://github.com/bytecodealliance/wasmtime/issues/1935
 pub fn preadv(self: File, iovecs: []const posix.iovec, offset: u64) PReadError!usize {
     if (is_windows) {
         // TODO improve this to use ReadFileScatter
@@ -1161,6 +1241,15 @@ pub fn preadv(self: File, iovecs: []const posix.iovec, offset: u64) PReadError!u
 /// See https://github.com/ziglang/zig/issues/7699
 /// On Windows, this function currently does alter the file pointer.
 /// https://github.com/ziglang/zig/issues/12783
+///
+/// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
+/// - On Linux, it will error with error.IsDir
+/// - On MacOS, it will error with error.IsDir
+/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
+///   filesystem and/or system settings
+/// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
+///   see https://github.com/bytecodealliance/wasmtime/issues/1935
 pub fn preadvAll(self: File, iovecs: []posix.iovec, offset: u64) PReadError!usize {
     if (iovecs.len == 0) return 0;
 

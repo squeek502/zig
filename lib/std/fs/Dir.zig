@@ -797,6 +797,13 @@ pub fn openFileWasi(self: Dir, sub_path: []const u8, flags: File.OpenFlags) File
             w.RIGHT.FD_FILESTAT_SET_SIZE;
     }
     const fd = try posix.openatWasi(self.fd, sub_path, 0x0, 0x0, fdflags, base, 0x0);
+    errdefer posix.close(fd);
+
+    if (!flags.allow_directory) {
+        const file = File{ .handle = fd };
+        if ((try file.stat()).kind == .directory) return error.IsDir;
+    }
+
     return File{ .handle = fd };
 }
 
@@ -842,6 +849,11 @@ pub fn openFileZ(self: Dir, sub_path: [*:0]const u8, flags: File.OpenFlags) File
     else
         try posix.openatZ(self.fd, sub_path, os_flags, 0);
     errdefer posix.close(fd);
+
+    if (!flags.allow_directory) {
+        const file = File{ .handle = fd };
+        if ((try file.stat()).kind == .directory) return error.IsDir;
+    }
 
     // WASI doesn't have posix.flock so we intetinally check OS prior to the inner if block
     // since it is not compiltime-known and we need to avoid undefined symbol in Wasm.
@@ -1766,7 +1778,7 @@ pub fn readLinkW(self: Dir, sub_path_w: []const u16, buffer: []u8) ![]u8 {
 /// it exactly fits the buffer, or it could mean the buffer was not big enough for the
 /// entire file.
 pub fn readFile(self: Dir, file_path: []const u8, buffer: []u8) ![]u8 {
-    var file = try self.openFile(file_path, .{});
+    var file = try self.openFile(file_path, .{ .allow_directory = false });
     defer file.close();
 
     const end_index = try file.readAll(buffer);
