@@ -759,10 +759,15 @@ pub fn close(self: *Dir) void {
     self.* = undefined;
 }
 
-/// Opens a file for reading or writing, without attempting to create a new file.
+/// Opens a `File` for reading or writing, without attempting to create a new file.
 /// To create a new file, see `createFile`.
 /// Call `File.close` to release the resource.
 /// Asserts that the path parameter has no null bytes.
+/// The resulting `File` can be of any `File.Kind`, with some caveats around directories:
+/// - If `flags.allow_directory` is true (this is the default), then this function
+///   returns `error.IsDir` only when `flags.isWritable()` is true.
+/// - If `flags.allow_directory` is false, then this function returns `error.IsDir`
+///   whenever `sub_path` refers to a directory.
 pub fn openFile(self: Dir, sub_path: []const u8, flags: File.OpenFlags) File.OpenError!File {
     if (builtin.os.tag == .windows) {
         const path_w = try std.os.windows.sliceToPrefixedFileW(self.fd, sub_path);
@@ -1777,8 +1782,25 @@ pub fn readLinkW(self: Dir, sub_path_w: []const u16, buffer: []u8) ![]u8 {
 /// the situation is ambiguous. It could either mean that the entire file was read, and
 /// it exactly fits the buffer, or it could mean the buffer was not big enough for the
 /// entire file.
+/// If the `file_path` refers to a directory, returns `error.IsDir`.
 pub fn readFile(self: Dir, file_path: []const u8, buffer: []u8) ![]u8 {
-    var file = try self.openFile(file_path, .{ .allow_directory = false });
+    var file = try self.openFile(file_path, .{
+        .allow_directory = switch (builtin.os.tag) {
+            // On Windows, we can disallow directories during `open` without
+            // any additional syscalls.
+            .windows => false,
+            // On Linux/Mac, disallowing directories during `open` would require
+            // an additional `stat` call. Because we know we are going to try to
+            // read the file afterwards and doing so will give us `error.IsDir` if
+            // the file is a directory, we can allow directories here.
+            .linux, .macos, .ios => true,
+            // On other platforms, we have to incur the cost of the additional
+            // `stat` call because we can't guarantee that the `read` call
+            // will give us an error (e.g. on FreeBSD, it depends on system
+            // settings and/or the underlying filesystem).
+            else => false,
+        },
+    });
     defer file.close();
 
     const end_index = try file.readAll(buffer);
@@ -1787,6 +1809,7 @@ pub fn readFile(self: Dir, file_path: []const u8, buffer: []u8) ![]u8 {
 
 /// On success, caller owns returned buffer.
 /// If the file is larger than `max_bytes`, returns `error.FileTooBig`.
+/// If the `file_path` refers to a directory, returns `error.IsDir`.
 pub fn readFileAlloc(self: Dir, allocator: mem.Allocator, file_path: []const u8, max_bytes: usize) ![]u8 {
     return self.readFileAllocOptions(allocator, file_path, max_bytes, null, @alignOf(u8), null);
 }
@@ -1796,6 +1819,7 @@ pub fn readFileAlloc(self: Dir, allocator: mem.Allocator, file_path: []const u8,
 /// If `size_hint` is specified the initial buffer size is calculated using
 /// that value, otherwise the effective file size is used instead.
 /// Allows specifying alignment and a sentinel value.
+/// If the `file_path` refers to a directory, returns `error.IsDir`.
 pub fn readFileAllocOptions(
     self: Dir,
     allocator: mem.Allocator,
@@ -1805,13 +1829,38 @@ pub fn readFileAllocOptions(
     comptime alignment: u29,
     comptime optional_sentinel: ?u8,
 ) !(if (optional_sentinel) |s| [:s]align(alignment) u8 else []align(alignment) u8) {
-    var file = try self.openFile(file_path, .{ .allow_directory = false });
+    var file = try self.openFile(file_path, .{
+        .allow_directory = switch (builtin.os.tag) {
+            // On Windows, we can disallow directories during `open` without
+            // any additional syscalls.
+            .windows => false,
+            // On Linux/Mac, disallowing directories during `open` would require
+            // an additional `stat` call. Because we know we are going to try to
+            // read the file afterwards and doing so will give us `error.IsDir` if
+            // the file is a directory, we can allow directories here.
+            .linux, .macos, .ios => true,
+            // On other platforms, we have to incur the cost of the additional
+            // `stat` call because we can't guarantee that the `read` call
+            // will give us an error (e.g. on FreeBSD, it depends on system
+            // settings and/or the underlying filesystem).
+            //
+            // However, if `size_hint` is null, then we'll need to do a
+            // `stat` call anyway, so we can delay the `stat` call for now.
+            else => if (size_hint == null) true else false,
+        },
+    });
     defer file.close();
 
-    // If the file size doesn't fit a usize it'll be certainly greater than
-    // `max_bytes`
-    const stat_size = size_hint orelse std.math.cast(usize, try file.getEndPos()) orelse
-        return error.FileTooBig;
+    const stat_size = size_hint orelse stat_size: {
+        const file_stat = try file.stat();
+        // On Windows, we already know this can't be a directory at this point
+        if (builtin.os.tag != .windows and file_stat.kind == .directory) {
+            return error.IsDir;
+        }
+        // If the file size doesn't fit a usize it'll be certainly greater than
+        // `max_bytes`
+        break :stat_size std.math.cast(usize, file_stat.size) orelse return error.FileTooBig;
+    };
 
     return file.readToEndAllocOptions(allocator, max_bytes, stat_size, alignment, optional_sentinel);
 }
@@ -2326,14 +2375,26 @@ pub fn updateFile(
     dest_path: []const u8,
     options: CopyFileOptions,
 ) !PrevStatus {
-    var src_file = try source_dir.openFile(source_path, .{});
+    const allow_directory = switch (builtin.os.tag) {
+        // On Windows, we can disallow directories during `open` without
+        // any additional syscalls.
+        .windows => false,
+        // On other platforms, disallowing directories would require an
+        // additional `stat` call, which we are going to do anyway
+        // so we can skip it during `open` and check for directories
+        // afterwards.
+        else => true,
+    };
+    var src_file = try source_dir.openFile(source_path, .{ .allow_directory = allow_directory });
     defer src_file.close();
 
     const src_stat = try src_file.stat();
+    // On Windows, we already know the `kind` can't be directory here
+    if (builtin.os.tag != .windows and src_stat.kind == .directory) return error.IsDir;
     const actual_mode = options.override_mode orelse src_stat.mode;
     check_dest_stat: {
         const dest_stat = blk: {
-            var dest_file = dest_dir.openFile(dest_path, .{}) catch |err| switch (err) {
+            var dest_file = dest_dir.openFile(dest_path, .{ .allow_directory = allow_directory }) catch |err| switch (err) {
                 error.FileNotFound => break :check_dest_stat,
                 else => |e| return e,
             };
@@ -2341,6 +2402,8 @@ pub fn updateFile(
 
             break :blk try dest_file.stat();
         };
+        // On Windows, we already know the `kind` can't be directory here
+        if (builtin.os.tag != .windows and dest_stat.kind == .directory) return error.IsDir;
 
         if (src_stat.size == dest_stat.size and
             src_stat.mtime == dest_stat.mtime and
@@ -2377,12 +2440,29 @@ pub fn copyFile(
     dest_path: []const u8,
     options: CopyFileOptions,
 ) CopyFileError!void {
-    var in_file = try source_dir.openFile(source_path, .{});
+    const allow_directory = switch (builtin.os.tag) {
+        // On Windows, we can disallow directories during `open` without
+        // any additional syscalls.
+        .windows => false,
+        // On other platforms, disallowing directories would require an
+        // additional `stat` call, which is redundant in all cases.
+        //
+        // - We can use the `stat` performed when override_mode is null
+        //   to detect and return `error.IsDir` early.
+        // - `atomicFile` will return error.IsDir when the `dest_path`
+        //   refers to a directory.
+        // - `copy_file` will return error.IsDir when the `source_path`
+        //   refers to a directory.
+        else => true,
+    };
+    var in_file = try source_dir.openFile(source_path, .{ .allow_directory = allow_directory });
     defer in_file.close();
 
     var size: ?u64 = null;
     const mode = options.override_mode orelse blk: {
         const st = try in_file.stat();
+        // On Windows, we already know this can't be a directory at this point
+        if (builtin.os.tag != .windows and st.kind == .directory) return error.IsDir;
         size = st.size;
         break :blk st.mode;
     };
@@ -2483,7 +2563,7 @@ pub fn stat(self: Dir) StatError!Stat {
 
 pub const StatFileError = File.OpenError || File.StatError || posix.FStatAtError;
 
-/// Returns metadata for a file inside the directory.
+/// Returns metadata for a path.
 ///
 /// On Windows, this requires three syscalls. On other operating systems, it
 /// only takes one.

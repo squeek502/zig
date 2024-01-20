@@ -707,11 +707,22 @@ test "file operations on directories" {
     try testWithAllSupportedPathTypes(struct {
         fn impl(ctx: *TestContext) !void {
             const test_dir_name = try ctx.transformPath("test_dir");
+            const test_file_name = try ctx.transformPath("test_file");
+            const not_created_file_name = try ctx.transformPath("not_created");
 
             try ctx.dir.makeDir(test_dir_name);
+            var test_file = try ctx.dir.createFile(test_file_name, .{});
+            test_file.close();
 
             try testing.expectError(error.IsDir, ctx.dir.createFile(test_dir_name, .{}));
             try testing.expectError(error.IsDir, ctx.dir.deleteFile(test_dir_name));
+
+            // AtomicFile when the dest path is a directory should fail during `finish`
+            {
+                var atomic_file = try ctx.dir.atomicFile(test_dir_name, .{});
+                defer atomic_file.deinit();
+                try testing.expectError(error.IsDir, atomic_file.finish());
+            }
 
             // Opening directories should always be disallowed when .allow_directory = false
             try testing.expectError(error.IsDir, ctx.dir.openFile(test_dir_name, .{ .allow_directory = false }));
@@ -726,6 +737,30 @@ test "file operations on directories" {
             try testing.expectError(error.IsDir, ctx.dir.readFile(test_dir_name, &read_buf));
             try testing.expectError(error.IsDir, ctx.dir.readFileAlloc(testing.allocator, test_dir_name, std.math.maxInt(usize)));
 
+            // updateFile dir -> <non-existent path>
+            try testing.expectError(error.IsDir, ctx.dir.updateFile(test_dir_name, ctx.dir, not_created_file_name, .{}));
+            try testing.expectError(error.IsDir, ctx.dir.updateFile(test_dir_name, ctx.dir, not_created_file_name, .{ .override_mode = File.default_mode }));
+            // ensure the dest file wasn't created
+            try testing.expectError(error.FileNotFound, ctx.dir.access(not_created_file_name, .{}));
+            // updateFile dir -> file
+            try testing.expectError(error.IsDir, ctx.dir.updateFile(test_dir_name, ctx.dir, test_file_name, .{}));
+            try testing.expectError(error.IsDir, ctx.dir.updateFile(test_dir_name, ctx.dir, test_file_name, .{ .override_mode = File.default_mode }));
+            // updateFile file -> dir
+            try testing.expectError(error.IsDir, ctx.dir.updateFile(test_file_name, ctx.dir, test_dir_name, .{}));
+            try testing.expectError(error.IsDir, ctx.dir.updateFile(test_file_name, ctx.dir, test_dir_name, .{ .override_mode = File.default_mode }));
+
+            // copyFile dir -> <non-existent path>
+            try testing.expectError(error.IsDir, ctx.dir.copyFile(test_dir_name, ctx.dir, not_created_file_name, .{}));
+            try testing.expectError(error.IsDir, ctx.dir.copyFile(test_dir_name, ctx.dir, not_created_file_name, .{ .override_mode = File.default_mode }));
+            // ensure the dest file wasn't created
+            try testing.expectError(error.FileNotFound, ctx.dir.access(not_created_file_name, .{}));
+            // copyFile dir -> file
+            try testing.expectError(error.IsDir, ctx.dir.copyFile(test_dir_name, ctx.dir, test_file_name, .{}));
+            try testing.expectError(error.IsDir, ctx.dir.copyFile(test_dir_name, ctx.dir, test_file_name, .{ .override_mode = File.default_mode }));
+            // copyFile file -> dir
+            try testing.expectError(error.IsDir, ctx.dir.copyFile(test_file_name, ctx.dir, test_dir_name, .{}));
+            try testing.expectError(error.IsDir, ctx.dir.copyFile(test_file_name, ctx.dir, test_dir_name, .{ .override_mode = File.default_mode }));
+
             if (ctx.path_type == .absolute and comptime PathType.absolute.isSupported(builtin.os)) {
                 try testing.expectError(error.IsDir, fs.createFileAbsolute(test_dir_name, .{}));
                 try testing.expectError(error.IsDir, fs.deleteFileAbsolute(test_dir_name));
@@ -737,6 +772,30 @@ test "file operations on directories" {
                 // even if .allow_directory is true.
                 try testing.expectError(error.IsDir, fs.openFileAbsolute(test_dir_name, .{ .mode = .read_write, .allow_directory = true }));
                 try testing.expectError(error.IsDir, fs.openFileAbsolute(test_dir_name, .{ .mode = .write_only, .allow_directory = true }));
+
+                // updateFile dir -> <non-existent path>
+                try testing.expectError(error.IsDir, fs.updateFileAbsolute(test_dir_name, not_created_file_name, .{}));
+                try testing.expectError(error.IsDir, fs.updateFileAbsolute(test_dir_name, not_created_file_name, .{ .override_mode = File.default_mode }));
+                // ensure the dest file wasn't created
+                try testing.expectError(error.FileNotFound, fs.accessAbsolute(not_created_file_name, .{}));
+                // updateFile dir -> file
+                try testing.expectError(error.IsDir, fs.updateFileAbsolute(test_dir_name, test_file_name, .{}));
+                try testing.expectError(error.IsDir, fs.updateFileAbsolute(test_dir_name, test_file_name, .{ .override_mode = File.default_mode }));
+                // updateFile file -> dir
+                try testing.expectError(error.IsDir, fs.updateFileAbsolute(test_file_name, test_dir_name, .{}));
+                try testing.expectError(error.IsDir, fs.updateFileAbsolute(test_file_name, test_dir_name, .{ .override_mode = File.default_mode }));
+
+                // copyFile dir -> <non-existent path>
+                try testing.expectError(error.IsDir, fs.copyFileAbsolute(test_dir_name, not_created_file_name, .{}));
+                try testing.expectError(error.IsDir, fs.copyFileAbsolute(test_dir_name, not_created_file_name, .{ .override_mode = File.default_mode }));
+                // ensure the dest file wasn't created
+                try testing.expectError(error.FileNotFound, fs.accessAbsolute(not_created_file_name, .{}));
+                // copyFile dir -> file
+                try testing.expectError(error.IsDir, fs.copyFileAbsolute(test_dir_name, test_file_name, .{}));
+                try testing.expectError(error.IsDir, fs.copyFileAbsolute(test_dir_name, test_file_name, .{ .override_mode = File.default_mode }));
+                // copyFile file -> dir
+                try testing.expectError(error.IsDir, fs.copyFileAbsolute(test_file_name, test_dir_name, .{}));
+                try testing.expectError(error.IsDir, fs.copyFileAbsolute(test_file_name, test_dir_name, .{ .override_mode = File.default_mode }));
             }
 
             // ensure the directory still exists as a sanity check
