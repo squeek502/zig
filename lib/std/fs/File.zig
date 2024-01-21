@@ -986,7 +986,7 @@ pub fn updateTimes(
 /// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
 /// - On Linux, it will error with error.IsDir
 /// - On MacOS, it will error with error.IsDir
-/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On Windows, it will error with error.InvalidFunction
 /// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
 ///   filesystem and/or system settings
 /// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
@@ -1005,7 +1005,7 @@ pub fn readToEndAlloc(self: File, allocator: Allocator, max_bytes: usize) ![]u8 
 /// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
 /// - On Linux, it will error with error.IsDir
 /// - On MacOS, it will error with error.IsDir
-/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On Windows, it will error with error.InvalidFunction
 /// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
 ///   filesystem and/or system settings
 /// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
@@ -1046,7 +1046,7 @@ pub const PReadError = posix.PReadError;
 /// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
 /// - On Linux, it will error with error.IsDir
 /// - On MacOS, it will error with error.IsDir
-/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On Windows, it will error with error.InvalidFunction
 /// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
 ///   filesystem and/or system settings
 /// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
@@ -1069,7 +1069,7 @@ pub fn read(self: File, buffer: []u8) ReadError!usize {
 /// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
 /// - On Linux, it will error with error.IsDir
 /// - On MacOS, it will error with error.IsDir
-/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On Windows, it will error with error.InvalidFunction
 /// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
 ///   filesystem and/or system settings
 /// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
@@ -1090,7 +1090,7 @@ pub fn readAll(self: File, buffer: []u8) ReadError!usize {
 /// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
 /// - On Linux, it will error with error.IsDir
 /// - On MacOS, it will error with error.IsDir
-/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On Windows, it will error with error.InvalidFunction
 /// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
 ///   filesystem and/or system settings
 /// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
@@ -1115,7 +1115,7 @@ pub fn pread(self: File, buffer: []u8, offset: u64) PReadError!usize {
 /// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
 /// - On Linux, it will error with error.IsDir
 /// - On MacOS, it will error with error.IsDir
-/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On Windows, it will error with error.InvalidFunction
 /// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
 ///   filesystem and/or system settings
 /// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
@@ -1135,7 +1135,7 @@ pub fn preadAll(self: File, buffer: []u8, offset: u64) PReadError!usize {
 /// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
 /// - On Linux, it will error with error.IsDir
 /// - On MacOS, it will error with error.IsDir
-/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On Windows, it will error with error.InvalidFunction
 /// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
 ///   filesystem and/or system settings
 /// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
@@ -1172,7 +1172,7 @@ pub fn readv(self: File, iovecs: []const posix.iovec) ReadError!usize {
 /// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
 /// - On Linux, it will error with error.IsDir
 /// - On MacOS, it will error with error.IsDir
-/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On Windows, it will error with error.InvalidFunction
 /// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
 ///   filesystem and/or system settings
 /// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
@@ -1213,7 +1213,7 @@ pub fn readvAll(self: File, iovecs: []posix.iovec) ReadError!usize {
 /// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
 /// - On Linux, it will error with error.IsDir
 /// - On MacOS, it will error with error.IsDir
-/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On Windows, it will error with error.InvalidFunction
 /// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
 ///   filesystem and/or system settings
 /// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),
@@ -1245,7 +1245,7 @@ pub fn preadv(self: File, iovecs: []const posix.iovec, offset: u64) PReadError!u
 /// If the `File.handle` refers to a directory, this function will have different behavior per-platform:
 /// - On Linux, it will error with error.IsDir
 /// - On MacOS, it will error with error.IsDir
-/// - On Windows, it will error with error.Unexpected (ERROR_INVALID_FUNCTION / Incorrect function)
+/// - On Windows, it will error with error.InvalidFunction
 /// - On FreeBSD/DragonFly BSD/NetBSD it may succeed or error, depending on the underlying
 ///   filesystem and/or system settings
 /// - On WASI, it will error with error.Unexpected (via ENOTCAPABLE),

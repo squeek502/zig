@@ -831,8 +831,12 @@ pub const ReadError = error{
     NotOpenForReading,
     SocketNotConnected,
 
-    // Windows only
+    /// Windows only
     NetNameDeleted,
+
+    /// Windows only. Typically, this error occurs when the file descriptor
+    /// is not something that can be read from (e.g. a directory).
+    InvalidFunction,
 
     /// This error occurs when no global event loop is configured,
     /// and reading from the file descriptor would block.

@@ -58,9 +58,9 @@ pub const OpenFileOptions = struct {
     pub const Filter = enum {
         /// Causes `OpenFile` to return `error.IsDir` if the opened handle would be a directory.
         non_dir_only,
-        /// Causes `OpenFile` to return `error.NotDir` if the opened handle would be a file.
+        /// Causes `OpenFile` to return `error.NotDir` if the opened handle is not a directory.
         dir_only,
-        /// `OpenFile` does not discriminate between opening files and directories.
+        /// `OpenFile` does not discriminate between opening files/directories/etc.
         any,
     };
 };
@@ -450,6 +450,7 @@ pub const ReadFileError = error{
     BrokenPipe,
     NetNameDeleted,
     OperationAborted,
+    InvalidFunction,
     Unexpected,
 };
 
@@ -490,6 +491,7 @@ pub fn ReadFile(in_hFile: HANDLE, buffer: []u8, offset: ?u64, io_mode: std.io.Mo
                 .BROKEN_PIPE => return error.BrokenPipe,
                 .NETNAME_DELETED => return error.NetNameDeleted,
                 .HANDLE_EOF => return @as(usize, bytes_transferred),
+                .INVALID_FUNCTION => return error.InvalidFunction,
                 else => |err| return unexpectedError(err),
             }
         }
@@ -525,6 +527,7 @@ pub fn ReadFile(in_hFile: HANDLE, buffer: []u8, offset: ?u64, io_mode: std.io.Mo
                     .BROKEN_PIPE => return 0,
                     .HANDLE_EOF => return 0,
                     .NETNAME_DELETED => return error.NetNameDeleted,
+                    .INVALID_FUNCTION => return error.InvalidFunction,
                     else => |err| return unexpectedError(err),
                 }
             }
