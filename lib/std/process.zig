@@ -431,6 +431,29 @@ pub fn hasEnvVarConstant(comptime key: []const u8) bool {
     }
 }
 
+pub const ParseEnvVarIntError = std.fmt.ParseIntError || error{EnvironmentVariableNotFound};
+
+/// Parses an environment variable as an integer.
+///
+/// Since the key is comptime-known, no allocation is needed.
+///
+/// On Windows, `key` must be valid UTF-8.
+pub fn parseEnvVarInt(comptime key: []const u8, comptime I: type, base: u8) ParseEnvVarIntError!I {
+    if (native_os == .windows) {
+        const key_w = comptime std.unicode.utf8ToUtf16LeStringLiteral(key);
+        const text = getenvW(key_w) orelse return error.EnvironmentVariableNotFound;
+        // For this implementation perhaps std.fmt.parseInt can be expanded to be generic across
+        // []u8 and []u16 like how many std.mem functions work.
+        _ = text;
+        @compileError("TODO implement this");
+    } else if (native_os == .wasi and !builtin.link_libc) {
+        @compileError("parseEnvVarInt is not supported for WASI without libc");
+    } else {
+        const text = posix.getenv(key) orelse return error.EnvironmentVariableNotFound;
+        return std.fmt.parseInt(I, text, base);
+    }
+}
+
 pub const HasEnvVarError = error{
     OutOfMemory,
 

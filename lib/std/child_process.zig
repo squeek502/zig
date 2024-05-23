@@ -15,6 +15,7 @@ const EnvMap = process.EnvMap;
 const maxInt = std.math.maxInt;
 const assert = std.debug.assert;
 const native_os = builtin.os.tag;
+const Allocator = std.mem.Allocator;
 
 pub const ChildProcess = struct {
     pub const Id = switch (native_os) {
@@ -94,6 +95,13 @@ pub const ChildProcess = struct {
     /// `request_resource_usage_statistics` was set to `true` before calling
     /// `spawn`.
     resource_usage_statistics: ResourceUsageStatistics = .{},
+
+    /// When populated, a pipe will be created for the child process to
+    /// communicate progress back to the parent. The file descriptor of the
+    /// write end of the pipe will be specified in the `ZIG_PROGRESS`
+    /// environment variable inside the child process. The progress reported by
+    /// the child will be attached to this progress node in the parent process.
+    parent_progress_node: std.Progress.Node = .{ .index = .none },
 
     pub const ResourceUsageStatistics = struct {
         rusage: @TypeOf(rusage_init) = rusage_init,
@@ -564,6 +572,16 @@ pub const ChildProcess = struct {
             if (any_ignore) posix.close(dev_null_fd);
         }
 
+        const prog_pipe: [2]posix.fd_t = p: {
+            if (self.parent_progress_node.index == .none) {
+                break :p .{ -1, -1 };
+            } else {
+                // No CLOEXEC because the child needs access to this file descriptor.
+                break :p try posix.pipe2(.{});
+            }
+        };
+        errdefer destroyPipe(prog_pipe);
+
         var arena_allocator = std.heap.ArenaAllocator.init(self.allocator);
         defer arena_allocator.deinit();
         const arena = arena_allocator.allocator();
@@ -580,16 +598,35 @@ pub const ChildProcess = struct {
         const argv_buf = try arena.allocSentinel(?[*:0]const u8, self.argv.len, null);
         for (self.argv, 0..) |arg, i| argv_buf[i] = (try arena.dupeZ(u8, arg)).ptr;
 
-        const envp = m: {
+        const envp: [*:null]const ?[*:0]const u8 = m: {
+            const extra_usizes: []const CreateEnvironOptions.ExtraUsize = if (prog_pipe[1] == -1) &.{} else &.{
+                .{ .name = "ZIG_PROGRESS", .value = @intCast(prog_pipe[1]) },
+            };
             if (self.env_map) |env_map| {
-                const envp_buf = try createNullDelimitedEnvMap(arena, env_map);
-                break :m envp_buf.ptr;
+                break :m (try createEnviron(arena, .{
+                    .env_map = env_map,
+                    .extra_usizes = extra_usizes,
+                })).ptr;
             } else if (builtin.link_libc) {
-                break :m std.c.environ;
+                if (extra_usizes.len == 0) {
+                    break :m std.c.environ;
+                } else {
+                    break :m (try createEnviron(arena, .{
+                        .existing = std.c.environ,
+                        .extra_usizes = extra_usizes,
+                    })).ptr;
+                }
             } else if (builtin.output_mode == .Exe) {
                 // Then we have Zig start code and this works.
-                // TODO type-safety for null-termination of `os.environ`.
-                break :m @as([*:null]const ?[*:0]const u8, @ptrCast(std.os.environ.ptr));
+                if (extra_usizes.len == 0) {
+                    break :m @ptrCast(std.os.environ.ptr);
+                } else {
+                    break :m (try createEnviron(arena, .{
+                        // TODO type-safety for null-termination of `os.environ`.
+                        .existing = @ptrCast(std.os.environ.ptr),
+                        .extra_usizes = extra_usizes,
+                    })).ptr;
+                }
             } else {
                 // TODO come up with a solution for this.
                 @compileError("missing std lib enhancement: ChildProcess implementation has no way to collect the environment variables to forward to the child process");
@@ -1760,7 +1797,7 @@ fn windowsMakeAsyncPipe(rd: *?windows.HANDLE, wr: *?windows.HANDLE, sattr: *cons
 }
 
 fn destroyPipe(pipe: [2]posix.fd_t) void {
-    posix.close(pipe[0]);
+    if (pipe[0] != -1) posix.close(pipe[0]);
     if (pipe[0] != pipe[1]) posix.close(pipe[1]);
 }
 
@@ -1828,22 +1865,59 @@ pub fn createWindowsEnvBlock(allocator: mem.Allocator, env_map: *const EnvMap) !
     return try allocator.realloc(result, i);
 }
 
-pub fn createNullDelimitedEnvMap(arena: mem.Allocator, env_map: *const EnvMap) ![:null]?[*:0]u8 {
-    const envp_count = env_map.count();
-    const envp_buf = try arena.allocSentinel(?[*:0]u8, envp_count, null);
-    {
-        var it = env_map.iterator();
-        var i: usize = 0;
-        while (it.next()) |pair| : (i += 1) {
-            const env_buf = try arena.allocSentinel(u8, pair.key_ptr.len + pair.value_ptr.len + 1, 0);
-            @memcpy(env_buf[0..pair.key_ptr.len], pair.key_ptr.*);
-            env_buf[pair.key_ptr.len] = '=';
-            @memcpy(env_buf[pair.key_ptr.len + 1 ..][0..pair.value_ptr.len], pair.value_ptr.*);
-            envp_buf[i] = env_buf.ptr;
+pub const CreateEnvironOptions = struct {
+    env_map: ?*const EnvMap = null,
+    existing: ?[*:null]const ?[*:0]const u8 = null,
+    extra_usizes: []const ExtraUsize = &.{},
+
+    pub const ExtraUsize = struct {
+        name: []const u8,
+        value: usize,
+    };
+};
+
+/// Creates a null-deliminated environment variable block in the format
+/// expected by POSIX, by combining all the sources of key-value pairs together
+/// from `options`.
+pub fn createEnviron(arena: Allocator, options: CreateEnvironOptions) Allocator.Error![:null]?[*:0]u8 {
+    const envp_count = c: {
+        var count: usize = 0;
+        if (options.existing) |env| {
+            while (env[count]) |_| : (count += 1) {}
         }
-        assert(i == envp_count);
+        if (options.env_map) |env_map| {
+            count += env_map.count();
+        }
+        count += options.extra_usizes.len;
+        break :c count;
+    };
+    const envp_buf = try arena.allocSentinel(?[*:0]u8, envp_count, null);
+    var i: usize = 0;
+
+    if (options.existing) |env| {
+        while (env[i]) |line| : (i += 1) {
+            envp_buf[i] = try arena.dupeZ(u8, mem.span(line));
+        }
     }
+
+    for (options.extra_usizes, envp_buf[i..][0..options.extra_usizes.len]) |extra_usize, *out| {
+        out.* = try std.fmt.allocPrintZ(arena, "{s}={d}", .{ extra_usize.name, extra_usize.value });
+    }
+    i += options.extra_usizes.len;
+
+    if (options.env_map) |env_map| {
+        var it = env_map.iterator();
+        while (it.next()) |pair| : (i += 1) {
+            envp_buf[i] = try std.fmt.allocPrintZ(arena, "{s}={s}", .{ pair.key_ptr.*, pair.value_ptr.* });
+        }
+    }
+
+    assert(i == envp_count);
     return envp_buf;
+}
+
+pub fn createNullDelimitedEnvMap(arena: mem.Allocator, env_map: *const EnvMap) Allocator.Error![:null]?[*:0]u8 {
+    return createEnviron(arena, .{ .env_map = env_map });
 }
 
 test createNullDelimitedEnvMap {
