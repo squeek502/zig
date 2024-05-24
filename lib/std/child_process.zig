@@ -219,9 +219,9 @@ pub const ChildProcess = struct {
             .stdin = null,
             .stdout = null,
             .stderr = null,
-            .stdin_behavior = StdIo.Inherit,
-            .stdout_behavior = StdIo.Inherit,
-            .stderr_behavior = StdIo.Inherit,
+            .stdin_behavior = .Inherit,
+            .stdout_behavior = .Inherit,
+            .stderr_behavior = .Inherit,
             .expand_arg0 = .no_expand,
         };
     }
@@ -541,22 +541,22 @@ pub const ChildProcess = struct {
 
     fn spawnPosix(self: *ChildProcess) SpawnError!void {
         const pipe_flags: posix.O = .{};
-        const stdin_pipe = if (self.stdin_behavior == StdIo.Pipe) try posix.pipe2(pipe_flags) else undefined;
-        errdefer if (self.stdin_behavior == StdIo.Pipe) {
+        const stdin_pipe = if (self.stdin_behavior == .Pipe) try posix.pipe2(pipe_flags) else undefined;
+        errdefer if (self.stdin_behavior == .Pipe) {
             destroyPipe(stdin_pipe);
         };
 
-        const stdout_pipe = if (self.stdout_behavior == StdIo.Pipe) try posix.pipe2(pipe_flags) else undefined;
-        errdefer if (self.stdout_behavior == StdIo.Pipe) {
+        const stdout_pipe = if (self.stdout_behavior == .Pipe) try posix.pipe2(pipe_flags) else undefined;
+        errdefer if (self.stdout_behavior == .Pipe) {
             destroyPipe(stdout_pipe);
         };
 
-        const stderr_pipe = if (self.stderr_behavior == StdIo.Pipe) try posix.pipe2(pipe_flags) else undefined;
-        errdefer if (self.stderr_behavior == StdIo.Pipe) {
+        const stderr_pipe = if (self.stderr_behavior == .Pipe) try posix.pipe2(pipe_flags) else undefined;
+        errdefer if (self.stderr_behavior == .Pipe) {
             destroyPipe(stderr_pipe);
         };
 
-        const any_ignore = (self.stdin_behavior == StdIo.Ignore or self.stdout_behavior == StdIo.Ignore or self.stderr_behavior == StdIo.Ignore);
+        const any_ignore = (self.stdin_behavior == .Ignore or self.stdout_behavior == .Ignore or self.stderr_behavior == .Ignore);
         const dev_null_fd = if (any_ignore)
             posix.openZ("/dev/null", .{ .ACCMODE = .RDWR }, 0) catch |err| switch (err) {
                 error.PathAlreadyExists => unreachable,
@@ -601,35 +601,24 @@ pub const ChildProcess = struct {
         const argv_buf = try arena.allocSentinel(?[*:0]const u8, self.argv.len, null);
         for (self.argv, 0..) |arg, i| argv_buf[i] = (try arena.dupeZ(u8, arg)).ptr;
 
+        const prog_fileno = 3;
+
         const envp: [*:null]const ?[*:0]const u8 = m: {
-            const extra_usizes: []const CreateEnvironOptions.ExtraUsize = if (prog_pipe[1] == -1) &.{} else &.{
-                .{ .name = "ZIG_PROGRESS", .value = @intCast(prog_pipe[1]) },
-            };
+            const prog_fd: i32 = if (prog_pipe[1] == -1) -1 else prog_fileno;
             if (self.env_map) |env_map| {
-                break :m (try createEnviron(arena, .{
-                    .env_map = env_map,
-                    .extra_usizes = extra_usizes,
+                break :m (try createEnvironFromMap(arena, env_map, .{
+                    .zig_progress_fd = prog_fd,
                 })).ptr;
             } else if (builtin.link_libc) {
-                if (extra_usizes.len == 0) {
-                    break :m std.c.environ;
-                } else {
-                    break :m (try createEnviron(arena, .{
-                        .existing = std.c.environ,
-                        .extra_usizes = extra_usizes,
-                    })).ptr;
-                }
+                break :m (try createEnvironFromExisting(arena, std.c.environ, .{
+                    .zig_progress_fd = prog_fd,
+                })).ptr;
             } else if (builtin.output_mode == .Exe) {
                 // Then we have Zig start code and this works.
-                if (extra_usizes.len == 0) {
-                    break :m @ptrCast(std.os.environ.ptr);
-                } else {
-                    break :m (try createEnviron(arena, .{
-                        // TODO type-safety for null-termination of `os.environ`.
-                        .existing = @ptrCast(std.os.environ.ptr),
-                        .extra_usizes = extra_usizes,
-                    })).ptr;
-                }
+                // TODO type-safety for null-termination of `os.environ`.
+                break :m (try createEnvironFromExisting(arena, @ptrCast(std.os.environ.ptr), .{
+                    .zig_progress_fd = prog_fd,
+                })).ptr;
             } else {
                 // TODO come up with a solution for this.
                 @compileError("missing std lib enhancement: ChildProcess implementation has no way to collect the environment variables to forward to the child process");
@@ -656,6 +645,7 @@ pub const ChildProcess = struct {
             setUpChildIo(self.stdin_behavior, stdin_pipe[0], posix.STDIN_FILENO, dev_null_fd) catch |err| forkChildErrReport(err_pipe[1], err);
             setUpChildIo(self.stdout_behavior, stdout_pipe[1], posix.STDOUT_FILENO, dev_null_fd) catch |err| forkChildErrReport(err_pipe[1], err);
             setUpChildIo(self.stderr_behavior, stderr_pipe[1], posix.STDERR_FILENO, dev_null_fd) catch |err| forkChildErrReport(err_pipe[1], err);
+            if (prog_pipe[1] != -1) posix.dup2(prog_pipe[1], prog_fileno) catch |err| forkChildErrReport(err_pipe[1], err);
 
             if (self.stdin_behavior == .Pipe) {
                 posix.close(stdin_pipe[0]);
@@ -668,6 +658,10 @@ pub const ChildProcess = struct {
             if (self.stderr_behavior == .Pipe) {
                 posix.close(stderr_pipe[0]);
                 posix.close(stderr_pipe[1]);
+            }
+            if (prog_pipe[1] != -1) {
+                if (prog_pipe[0] != prog_fileno) posix.close(prog_pipe[0]);
+                if (prog_pipe[1] != prog_fileno) posix.close(prog_pipe[1]);
             }
 
             if (self.cwd_dir) |cwd| {
@@ -722,7 +716,9 @@ pub const ChildProcess = struct {
         if (self.stderr_behavior == .Pipe) {
             posix.close(stderr_pipe[1]);
         }
-
+        if (prog_pipe[1] != -1) {
+            posix.close(prog_pipe[1]);
+        }
         self.progress_node.setIpcFd(prog_pipe[0]);
     }
 
@@ -1871,49 +1867,63 @@ pub fn createWindowsEnvBlock(allocator: mem.Allocator, env_map: *const EnvMap) !
 }
 
 pub const CreateEnvironOptions = struct {
-    env_map: ?*const EnvMap = null,
-    existing: ?[*:null]const ?[*:0]const u8 = null,
-    extra_usizes: []const ExtraUsize = &.{},
-
-    pub const ExtraUsize = struct {
-        name: []const u8,
-        value: usize,
-    };
+    /// `null` means to leave the `ZIG_PROGRESS` environment variable unmodified.
+    /// If non-null, negative means to remove the environment variable, and >= 0
+    /// means to provide it with the given integer.
+    zig_progress_fd: ?i32 = null,
 };
 
 /// Creates a null-deliminated environment variable block in the format
-/// expected by POSIX, by combining all the sources of key-value pairs together
-/// from `options`.
-pub fn createEnviron(arena: Allocator, options: CreateEnvironOptions) Allocator.Error![:null]?[*:0]u8 {
-    const envp_count = c: {
-        var count: usize = 0;
-        if (options.existing) |env| {
-            while (env[count]) |_| : (count += 1) {}
+/// expected by POSIX, from a hash map plus options.
+pub fn createEnvironFromMap(
+    arena: Allocator,
+    map: *const EnvMap,
+    options: CreateEnvironOptions,
+) Allocator.Error![:null]?[*:0]u8 {
+    const ZigProgressAction = enum { nothing, edit, delete, add };
+    const zig_progress_action: ZigProgressAction = a: {
+        const fd = options.zig_progress_fd orelse break :a .nothing;
+        const contains = map.get("ZIG_PROGRESS") != null;
+        if (fd >= 0) {
+            break :a if (contains) .edit else .add;
+        } else {
+            if (contains) break :a .delete;
         }
-        if (options.env_map) |env_map| {
-            count += env_map.count();
-        }
-        count += options.extra_usizes.len;
-        break :c count;
+        break :a .nothing;
     };
+
+    const envp_count: usize = @intCast(@as(isize, map.count()) + @as(isize, switch (zig_progress_action) {
+        .add => 1,
+        .delete => -1,
+        .nothing, .edit => 0,
+    }));
+
     const envp_buf = try arena.allocSentinel(?[*:0]u8, envp_count, null);
     var i: usize = 0;
 
-    if (options.existing) |env| {
-        while (env[i]) |line| : (i += 1) {
-            envp_buf[i] = try arena.dupeZ(u8, mem.span(line));
-        }
+    if (zig_progress_action == .add) {
+        envp_buf[i] = try std.fmt.allocPrintZ(arena, "ZIG_PROGRESS={d}", .{options.zig_progress_fd.?});
+        i += 1;
     }
 
-    for (options.extra_usizes, envp_buf[i..][0..options.extra_usizes.len]) |extra_usize, *out| {
-        out.* = try std.fmt.allocPrintZ(arena, "{s}={d}", .{ extra_usize.name, extra_usize.value });
-    }
-    i += options.extra_usizes.len;
+    {
+        var it = map.iterator();
+        while (it.next()) |pair| {
+            if (mem.eql(u8, pair.key_ptr.*, "ZIG_PROGRESS")) switch (zig_progress_action) {
+                .add => unreachable,
+                .delete => continue,
+                .edit => {
+                    envp_buf[i] = try std.fmt.allocPrintZ(arena, "{s}={d}", .{
+                        pair.key_ptr.*, options.zig_progress_fd.?,
+                    });
+                    i += 1;
+                    continue;
+                },
+                .nothing => {},
+            };
 
-    if (options.env_map) |env_map| {
-        var it = env_map.iterator();
-        while (it.next()) |pair| : (i += 1) {
             envp_buf[i] = try std.fmt.allocPrintZ(arena, "{s}={s}", .{ pair.key_ptr.*, pair.value_ptr.* });
+            i += 1;
         }
     }
 
@@ -1921,8 +1931,68 @@ pub fn createEnviron(arena: Allocator, options: CreateEnvironOptions) Allocator.
     return envp_buf;
 }
 
+/// Creates a null-deliminated environment variable block in the format
+/// expected by POSIX, from a hash map plus options.
+pub fn createEnvironFromExisting(
+    arena: Allocator,
+    existing: [*:null]const ?[*:0]const u8,
+    options: CreateEnvironOptions,
+) Allocator.Error![:null]?[*:0]u8 {
+    const existing_count, const contains_zig_progress = c: {
+        var count: usize = 0;
+        var contains = false;
+        while (existing[count]) |line| : (count += 1) {
+            contains = contains or mem.eql(u8, mem.sliceTo(line, '='), "ZIG_PROGRESS");
+        }
+        break :c .{ count, contains };
+    };
+    const ZigProgressAction = enum { nothing, edit, delete, add };
+    const zig_progress_action: ZigProgressAction = a: {
+        const fd = options.zig_progress_fd orelse break :a .nothing;
+        if (fd >= 0) {
+            break :a if (contains_zig_progress) .edit else .add;
+        } else {
+            if (contains_zig_progress) break :a .delete;
+        }
+        break :a .nothing;
+    };
+
+    const envp_count: usize = @intCast(@as(isize, @intCast(existing_count)) + @as(isize, switch (zig_progress_action) {
+        .add => 1,
+        .delete => -1,
+        .nothing, .edit => 0,
+    }));
+
+    const envp_buf = try arena.allocSentinel(?[*:0]u8, envp_count, null);
+    var i: usize = 0;
+    var existing_index: usize = 0;
+
+    if (zig_progress_action == .add) {
+        envp_buf[i] = try std.fmt.allocPrintZ(arena, "ZIG_PROGRESS={d}", .{options.zig_progress_fd.?});
+        i += 1;
+    }
+
+    while (existing[existing_index]) |line| : (existing_index += 1) {
+        if (mem.eql(u8, mem.sliceTo(line, '='), "ZIG_PROGRESS")) switch (zig_progress_action) {
+            .add => unreachable,
+            .delete => continue,
+            .edit => {
+                envp_buf[i] = try std.fmt.allocPrintZ(arena, "ZIG_PROGRESS={d}", .{options.zig_progress_fd.?});
+                i += 1;
+                continue;
+            },
+            .nothing => {},
+        };
+        envp_buf[i] = try arena.dupeZ(u8, mem.span(line));
+        i += 1;
+    }
+
+    assert(i == envp_count);
+    return envp_buf;
+}
+
 pub fn createNullDelimitedEnvMap(arena: mem.Allocator, env_map: *const EnvMap) Allocator.Error![:null]?[*:0]u8 {
-    return createEnviron(arena, .{ .env_map = env_map });
+    return createEnvironFromMap(arena, env_map, .{});
 }
 
 test createNullDelimitedEnvMap {
