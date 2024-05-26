@@ -18,6 +18,8 @@ terminal: ?std.fs.File,
 /// Is this a windows API terminal (note: this is not the same as being run on windows
 /// because other terminals exist like MSYS/git-bash)
 is_windows_terminal: bool,
+// TODO: Remove, this is not used in the 'marker' implementation
+initial_cursor_pos: if (builtin.os.tag == .windows) windows.COORD else void,
 
 /// Whether the terminal supports ANSI escape codes.
 supports_ansi_escape_codes: bool,
@@ -85,14 +87,14 @@ pub const Node = struct {
         estimated_total_count: u32,
         name: [max_name_len]u8,
 
-        fn getIpcFd(s: Storage) ?posix.fd_t {
-            return if (s.estimated_total_count != std.math.maxInt(u32)) null else @bitCast(s.completed_count);
-        }
+        // fn getIpcFd(s: Storage) ?posix.fd_t {
+        //     return if (s.estimated_total_count != std.math.maxInt(u32)) null else @bitCast(s.completed_count);
+        // }
 
-        fn setIpcFd(s: *Storage, fd: posix.fd_t) void {
-            s.estimated_total_count = std.math.maxInt(u32);
-            s.completed_count = @bitCast(fd);
-        }
+        // fn setIpcFd(s: *Storage, fd: posix.fd_t) void {
+        //     s.estimated_total_count = std.math.maxInt(u32);
+        //     s.completed_count = @bitCast(fd);
+        // }
 
         comptime {
             assert((@sizeOf(Storage) % 4) == 0);
@@ -264,6 +266,7 @@ pub const Node = struct {
 var global_progress: Progress = .{
     .terminal = null,
     .is_windows_terminal = false,
+    .initial_cursor_pos = if (builtin.os.tag == .windows) undefined else {},
     .supports_ansi_escape_codes = false,
     .update_thread = null,
     .redraw_event = .{},
@@ -315,57 +318,62 @@ pub fn start(options: Options) Node {
     global_progress.refresh_rate_ns = options.refresh_rate_ns;
     global_progress.initial_delay_ns = options.initial_delay_ns;
 
-    if (std.process.parseEnvVarInt("ZIG_PROGRESS", u31, 10)) |ipc_fd| {
-        if (std.Thread.spawn(.{}, ipcThreadRun, .{ipc_fd})) |thread| {
-            global_progress.update_thread = thread;
-        } else |err| {
-            std.log.warn("failed to spawn IPC thread for communicating progress to parent: {s}", .{@errorName(err)});
-            return .{ .index = .none };
-        }
-    } else |env_err| switch (env_err) {
-        error.EnvironmentVariableNotFound => {
-            if (options.disable_printing) {
-                return .{ .index = .none };
-            }
-            const stderr = std.io.getStdErr();
-            if (stderr.supportsAnsiEscapeCodes()) {
-                global_progress.terminal = stderr;
-                global_progress.supports_ansi_escape_codes = true;
-            } else if (builtin.os.tag == .windows and stderr.isTty()) {
-                global_progress.is_windows_terminal = true;
-                global_progress.terminal = stderr;
-            } else if (builtin.os.tag != .windows) {
-                // we are in a "dumb" terminal like in acme or writing to a file
-                global_progress.terminal = stderr;
-            }
-
-            if (global_progress.terminal == null or !global_progress.supports_ansi_escape_codes) {
-                return .{ .index = .none };
-            }
-
-            if (have_sigwinch) {
-                var act: posix.Sigaction = .{
-                    .handler = .{ .sigaction = handleSigWinch },
-                    .mask = posix.empty_sigset,
-                    .flags = (posix.SA.SIGINFO | posix.SA.RESTART),
-                };
-                posix.sigaction(posix.SIG.WINCH, &act, null) catch |err| {
-                    std.log.warn("failed to install SIGWINCH signal handler for noticing terminal resizes: {s}", .{@errorName(err)});
-                };
-            }
-
-            if (std.Thread.spawn(.{}, updateThreadRun, .{})) |thread| {
-                global_progress.update_thread = thread;
-            } else |err| {
-                std.log.warn("unable to spawn thread for printing progress to terminal: {s}", .{@errorName(err)});
-                return .{ .index = .none };
-            }
-        },
-        else => |e| {
-            std.log.warn("invalid ZIG_PROGRESS file descriptor integer: {s}", .{@errorName(e)});
-            return .{ .index = .none };
-        },
+    // if (std.process.parseEnvVarInt("ZIG_PROGRESS", u31, 10)) |ipc_fd| {
+    //     if (std.Thread.spawn(.{}, ipcThreadRun, .{ipc_fd})) |thread| {
+    //         global_progress.update_thread = thread;
+    //     } else |err| {
+    //         std.log.warn("failed to spawn IPC thread for communicating progress to parent: {s}", .{@errorName(err)});
+    //         return .{ .index = .none };
+    //     }
+    // } else |env_err| switch (env_err) {
+    //     error.EnvironmentVariableNotFound => {
+    if (options.disable_printing) {
+        return .{ .index = .none };
     }
+    const stderr = std.io.getStdErr();
+    if (stderr.supportsAnsiEscapeCodes()) {
+        global_progress.terminal = stderr;
+        global_progress.supports_ansi_escape_codes = true;
+    } else if (builtin.os.tag == .windows and stderr.isTty()) {
+        global_progress.is_windows_terminal = true;
+        var console_info: windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+        if (windows.kernel32.GetConsoleScreenBufferInfo(stderr.handle, &console_info) != windows.TRUE) {
+            @panic("TODO: handle this failure");
+        }
+        global_progress.initial_cursor_pos = console_info.dwCursorPosition;
+        global_progress.terminal = stderr;
+    } else if (builtin.os.tag != .windows) {
+        // we are in a "dumb" terminal like in acme or writing to a file
+        global_progress.terminal = stderr;
+    }
+
+    if (global_progress.terminal == null or (!global_progress.is_windows_terminal and !global_progress.supports_ansi_escape_codes)) {
+        return .{ .index = .none };
+    }
+
+    if (have_sigwinch) {
+        var act: posix.Sigaction = .{
+            .handler = .{ .sigaction = handleSigWinch },
+            .mask = posix.empty_sigset,
+            .flags = (posix.SA.SIGINFO | posix.SA.RESTART),
+        };
+        posix.sigaction(posix.SIG.WINCH, &act, null) catch |err| {
+            std.log.warn("failed to install SIGWINCH signal handler for noticing terminal resizes: {s}", .{@errorName(err)});
+        };
+    }
+
+    if (std.Thread.spawn(.{}, updateThreadRun, .{})) |thread| {
+        global_progress.update_thread = thread;
+    } else |err| {
+        std.log.warn("unable to spawn thread for printing progress to terminal: {s}", .{@errorName(err)});
+        return .{ .index = .none };
+    }
+    // },
+    // else => |e| {
+    //     std.log.warn("invalid ZIG_PROGRESS file descriptor integer: {s}", .{@errorName(e)});
+    //     return .{ .index = .none };
+    // },
+    // }
 
     return root_node;
 }
@@ -460,7 +468,23 @@ const tree_tee = "\x1B\x28\x30\x74\x71\x1B\x28\x42 "; // ├─
 const tree_line = "\x1B\x28\x30\x78\x1B\x28\x42  "; // │
 const tree_langle = "\x1B\x28\x30\x6d\x71\x1B\x28\x42 "; // └─
 
+// TODO: Only use the cp437 bytes when the code page is actually 437.
+//       Output UTF-8 if the code page is 65001.
+//       Output something else if the code page is neither (ASCII?).
+//       Alternatively, use WriteConsoleW to output the code units of
+//       for ├─, │, └─ but that would eliminate the 'build up a buffer'
+//       and write it out all out at once thing (unless the buffer was
+//       made to be WTF-16 on Windows and WriteConsoleW was used for
+//       the entire tree).
+const tree_tee_cp437 = "\xC3\xC4 "; // ├─
+const tree_line_cp437 = "\xB3  "; // │
+const tree_langle_cp437 = "\xC0\xC4 "; // └─
+
 fn clearTerminal() void {
+    if (builtin.os.tag == .windows and global_progress.is_windows_terminal) {
+        return clearTerminalWindowsApi();
+    }
+
     if (global_progress.newline_count == 0) return;
 
     var i: usize = 0;
@@ -497,6 +521,123 @@ fn computeClear(buf: []u8, start_i: usize) usize {
     return i;
 }
 
+fn clearTerminalWindowsApi() void {
+    // This is the 'marker' implementation. The idea is:
+    // - Always write a marker (in this case U+25BA or ►) at the beginning of the progress
+    // - Get the current cursor position (at the end of the progress)
+    // - Subtract the number of lines written to get the expected start of the progress
+    // - Check that the first character at the start of the progress is the marker
+    // - If it's not the marker, keep checking the line before until we find it
+    // - Clear the screen from that position on, and set the cursor position to the start
+    //
+    // This strategy works even if there is line wrapping, and can handle the window
+    // being resized/scrolled arbitrarily.
+    //
+    // Notes:
+    // - Ideally, the marker would be a zero-width character, but AFAICT the Windows console
+    //   don't support rendering zero-width characters (they should up as a space)
+    // - This same marker idea could technically be done with an attribute instead
+    //   (https://learn.microsoft.com/en-us/windows/console/console-screen-buffers#character-attributes)
+    //   but it must be a valid attribute and it actually needs to apply to the first
+    //   character in order to be readable via ReadConsoleOutputAttribute. I'm not sure
+    //   any of the attributes would be safe/invisible.
+    const prev_nl_n = global_progress.newline_count;
+    if (prev_nl_n > 0) {
+        global_progress.newline_count = 0;
+        const handle = (global_progress.terminal orelse return).handle;
+        const screen_area = @as(windows.DWORD, global_progress.cols) * global_progress.rows;
+
+        var console_info: windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+        if (windows.kernel32.GetConsoleScreenBufferInfo(handle, &console_info) == 0) {
+            @panic("TODO: handle this failure");
+        }
+        const cursor_pos = console_info.dwCursorPosition;
+        const expected_y = cursor_pos.Y - @as(i16, @intCast(prev_nl_n - 1));
+        var start_pos = windows.COORD{ .X = 0, .Y = expected_y };
+        while (start_pos.Y >= 0) {
+            var wchar: [1]u16 = undefined;
+            var num_console_chars_read: windows.DWORD = undefined;
+            if (windows.kernel32.ReadConsoleOutputCharacterW(handle, &wchar, wchar.len, start_pos, &num_console_chars_read) == 0) {
+                @panic("TODO: handle this failure");
+            }
+
+            if (wchar[0] == 0x25BA) break;
+            start_pos.Y -= 1;
+        } else {
+            // If we couldn't find the marker, then just assume that no lines wrapped
+            start_pos = .{ .X = 0, .Y = expected_y };
+        }
+        var num_chars_written: windows.DWORD = undefined;
+        if (windows.kernel32.FillConsoleOutputCharacterW(handle, ' ', screen_area, start_pos, &num_chars_written) == 0) {
+            @panic("TODO: handle failure");
+        }
+        if (windows.kernel32.SetConsoleCursorPosition(handle, start_pos) == 0) {
+            @panic("TODO: handle failure");
+        }
+    }
+
+    // This is the 'sorta-like-ANSI-escapes' implementation. The idea is:
+    // - Write out a carriage return to go to the start of the line
+    // - Get the cursor position
+    // - Clear to the end of the screen
+    // - Go up a line and repeat the above
+    //
+    // This strategy handles resizing somewhat, but totally fails if there is any wrapping
+    // since the carriage return does not bring you to the start of the wrapped line, it only
+    // brings you to the start of the current row.
+
+    // const handle = (global_progress.terminal orelse return).handle;
+    // const screen_area = @as(windows.DWORD, global_progress.cols) * global_progress.rows;
+    // const prev_nl_n = global_progress.newline_count;
+    // if (prev_nl_n > 0) {
+    //     global_progress.newline_count = 0;
+    //     for (1..prev_nl_n) |_| {
+    //         const wbuf = [_]u16{'\r'};
+    //         var num_chars_written: windows.DWORD = undefined;
+    //         if (windows.kernel32.WriteConsoleW(handle, &wbuf, wbuf.len, &num_chars_written, null) == 0) {
+    //             @panic("TODO: handle this failure");
+    //         }
+
+    //         var console_info: windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+    //         if (windows.kernel32.GetConsoleScreenBufferInfo(handle, &console_info) != windows.TRUE) {
+    //             @panic("TODO: handle this failure");
+    //         }
+    //         if (windows.kernel32.FillConsoleOutputCharacterW(handle, ' ', screen_area, console_info.dwCursorPosition, &num_chars_written) == 0) {
+    //             @panic("TODO: handle failure");
+    //         }
+    //         const prev_line_pos = windows.COORD{
+    //             .X = 0,
+    //             .Y = console_info.dwCursorPosition.Y - 1,
+    //         };
+    //         if (windows.kernel32.SetConsoleCursorPosition(handle, prev_line_pos) == 0) {
+    //             @panic("TODO: handle failure");
+    //         }
+    //         if (windows.kernel32.FillConsoleOutputCharacterW(handle, ' ', screen_area, prev_line_pos, &num_chars_written) == 0) {
+    //             @panic("TODO: handle failure");
+    //         }
+    //     }
+    // }
+
+    // This is the 'naive/minimal' implementation
+    // The idea is:
+    // - Store the initial coordinates of the cursor during `start`
+    // - Clear from the initial coordinates to the end of the screen
+    // - Set the cursor to the initial coordinates
+    //
+    // This strategy breaks down on any resizing/wrapping
+
+    // const handle = (global_progress.terminal orelse return).handle;
+    // const area = @as(windows.DWORD, global_progress.cols) * global_progress.rows;
+    // var num_chars_written: windows.DWORD = undefined;
+    // if (windows.kernel32.FillConsoleOutputCharacterW(handle, ' ', area, global_progress.initial_cursor_pos, &num_chars_written) == 0) {
+    //     @panic("TODO: handle failure");
+    // }
+    // if (windows.kernel32.SetConsoleCursorPosition(handle, global_progress.initial_cursor_pos) == 0) {
+    //     @panic("TODO: handle failure");
+    // }
+    // global_progress.newline_count = 0;
+}
+
 const Children = struct {
     child: Node.OptionalIndex,
     sibling: Node.OptionalIndex,
@@ -514,7 +655,7 @@ const Serialized = struct {
 
 fn serialize() Serialized {
     var serialized_len: usize = 0;
-    var any_ipc = false;
+    //var any_ipc = false;
 
     // Iterate all of the nodes and construct a serializable copy of the state that can be examined
     // without atomics.
@@ -530,7 +671,7 @@ fn serialize() Serialized {
             dest_storage.estimated_total_count = @atomicLoad(u32, &storage_ptr.estimated_total_count, .monotonic);
             const end_parent = @atomicLoad(Node.Parent, parent_ptr, .seq_cst);
             if (begin_parent == end_parent) {
-                any_ipc = any_ipc or (dest_storage.getIpcFd() != null);
+                //any_ipc = any_ipc or (dest_storage.getIpcFd() != null);
                 serialized_node_parents_buffer[serialized_len] = begin_parent;
                 serialized_node_map_buffer[i] = @enumFromInt(serialized_len);
                 serialized_len += 1;
@@ -551,8 +692,8 @@ fn serialize() Serialized {
     }
 
     // Find nodes which correspond to child processes.
-    if (any_ipc)
-        serialized_len = serializeIpc(serialized_len);
+    // if (any_ipc)
+    //     serialized_len = serializeIpc(serialized_len);
 
     return .{
         .parents = serialized_node_parents_buffer[0..serialized_len],
@@ -770,10 +911,19 @@ fn computeRedraw() []u8 {
     var i: usize = 0;
     const buf = global_progress.draw_buffer;
 
-    buf[i..][0..start_sync.len].* = start_sync.*;
-    i += start_sync.len;
+    if (global_progress.supports_ansi_escape_codes) {
+        buf[i..][0..start_sync.len].* = start_sync.*;
+        i += start_sync.len;
 
-    i = computeClear(buf, i);
+        i = computeClear(buf, i);
+    } else if (builtin.os.tag == .windows and global_progress.is_windows_terminal) {
+        clearTerminalWindowsApi();
+
+        // Write the marker that we will use to find the beginning of the progress when clearing.
+        // Note: This doesn't have to use WriteConsoleW, but doing so avoids code page nonsense.
+        var num_chars_written: windows.DWORD = undefined;
+        std.debug.assert(windows.kernel32.WriteConsoleW(global_progress.terminal.?.handle, &[_]u16{0x25BA}, 1, &num_chars_written, null) != 0);
+    }
 
     const root_node_index: Node.Index = @enumFromInt(0);
     i = computeNode(buf, i, serialized, children, root_node_index);
@@ -781,8 +931,10 @@ fn computeRedraw() []u8 {
     // Truncate trailing newline.
     if (buf[i - 1] == '\n') i -= 1;
 
-    buf[i..][0..finish_sync.len].* = finish_sync.*;
-    i += finish_sync.len;
+    if (global_progress.supports_ansi_escape_codes) {
+        buf[i..][0..finish_sync.len].* = finish_sync.*;
+        i += finish_sync.len;
+    }
 
     return buf[0..i];
 }
@@ -802,8 +954,13 @@ fn computePrefix(
         buf[i..][0..3].* = "   ".*;
         i += 3;
     } else {
-        buf[i..][0..tree_line.len].* = tree_line.*;
-        i += tree_line.len;
+        if (builtin.os.tag == .windows and !global_progress.supports_ansi_escape_codes) {
+            buf[i..][0..tree_line_cp437.len].* = tree_line_cp437.*;
+            i += tree_line_cp437.len;
+        } else {
+            buf[i..][0..tree_line.len].* = tree_line.*;
+            i += tree_line.len;
+        }
     }
     return i;
 }
@@ -826,11 +983,21 @@ fn computeNode(
 
     if (parent != .none) {
         if (children[@intFromEnum(node_index)].sibling == .none) {
-            buf[i..][0..tree_langle.len].* = tree_langle.*;
-            i += tree_langle.len;
+            if (builtin.os.tag == .windows and !global_progress.supports_ansi_escape_codes) {
+                buf[i..][0..tree_langle_cp437.len].* = tree_langle_cp437.*;
+                i += tree_langle_cp437.len;
+            } else {
+                buf[i..][0..tree_langle.len].* = tree_langle.*;
+                i += tree_langle.len;
+            }
         } else {
-            buf[i..][0..tree_tee.len].* = tree_tee.*;
-            i += tree_tee.len;
+            if (builtin.os.tag == .windows and !global_progress.supports_ansi_escape_codes) {
+                buf[i..][0..tree_tee_cp437.len].* = tree_tee_cp437.*;
+                i += tree_tee_cp437.len;
+            } else {
+                buf[i..][0..tree_tee.len].* = tree_tee.*;
+                i += tree_tee.len;
+            }
         }
     }
 
@@ -910,6 +1077,26 @@ fn writeIpc(fd: posix.fd_t, serialized: Serialized) error{BrokenPipe}!void {
 
 fn maybeUpdateSize(resize_flag: bool) void {
     if (!resize_flag) return;
+
+    if (builtin.os.tag == .windows) {
+        var console_info: windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+        const handle = (global_progress.terminal orelse return).handle;
+        if (windows.kernel32.GetConsoleScreenBufferInfo(handle, &console_info) != windows.TRUE) {
+            @panic("TODO: handle this failure");
+        }
+        // In the old Windows console, console_info.dwSize.Y is the line count
+        // of the entire scrollback buffer, so we use this instead so that we always
+        // get the size of the screen.
+        const screen_height = console_info.srWindow.Bottom - console_info.srWindow.Top;
+        // TODO: @intCast for these is not a good idea.
+        //       need to find out if @bitCast would work or if
+        //       the number is actually intended to be signed (i.e. if the max is
+        //       std.math.maxInt(i16), or if > maxInt(i16) is returned as negative
+        //       and bitcasting would get us the real value).
+        global_progress.rows = @intCast(screen_height);
+        global_progress.cols = @intCast(console_info.dwSize.X);
+        return;
+    }
 
     var winsize: posix.winsize = .{
         .ws_row = 0,
