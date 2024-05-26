@@ -540,7 +540,18 @@ pub const ChildProcess = struct {
     }
 
     fn spawnPosix(self: *ChildProcess) SpawnError!void {
-        const pipe_flags: posix.O = .{};
+        // The child process does need to access (one end of) these pipes. However,
+        // we must initially set CLOEXEC to avoid a race condition. If another thread
+        // is racing to spawn a different child process, we don't want it to inherit
+        // these FDs in any scenario; that would mean that, for instance, calls to
+        // `poll` from the parent would not report the child's stdout as closing when
+        // expected, since the other child may retain a reference to the write end of
+        // the pipe. So, we create the pipes with CLOEXEC initially. After fork, we
+        // need to do something in the new child to make sure we preserve the reference
+        // we want. We could use `fcntl` to remove CLOEXEC from the FD, but as it
+        // turns out, we `dup2` everything anyway, so there's no need!
+        const pipe_flags: posix.O = .{ .CLOEXEC = true };
+
         const stdin_pipe = if (self.stdin_behavior == .Pipe) try posix.pipe2(pipe_flags) else undefined;
         errdefer if (self.stdin_behavior == .Pipe) {
             destroyPipe(stdin_pipe);
@@ -579,8 +590,8 @@ pub const ChildProcess = struct {
             if (self.progress_node.index == .none) {
                 break :p .{ -1, -1 };
             } else {
-                // No CLOEXEC because the child needs access to this file descriptor.
-                break :p try posix.pipe2(.{ .NONBLOCK = true });
+                // We use CLOEXEC for the same reason as in `pipe_flags`.
+                break :p try posix.pipe2(.{ .NONBLOCK = true, .CLOEXEC = true });
             }
         };
         errdefer destroyPipe(prog_pipe);
@@ -642,27 +653,11 @@ pub const ChildProcess = struct {
         const pid_result = try posix.fork();
         if (pid_result == 0) {
             // we are the child
+
             setUpChildIo(self.stdin_behavior, stdin_pipe[0], posix.STDIN_FILENO, dev_null_fd) catch |err| forkChildErrReport(err_pipe[1], err);
             setUpChildIo(self.stdout_behavior, stdout_pipe[1], posix.STDOUT_FILENO, dev_null_fd) catch |err| forkChildErrReport(err_pipe[1], err);
             setUpChildIo(self.stderr_behavior, stderr_pipe[1], posix.STDERR_FILENO, dev_null_fd) catch |err| forkChildErrReport(err_pipe[1], err);
             if (prog_pipe[1] != -1) posix.dup2(prog_pipe[1], prog_fileno) catch |err| forkChildErrReport(err_pipe[1], err);
-
-            if (self.stdin_behavior == .Pipe) {
-                posix.close(stdin_pipe[0]);
-                posix.close(stdin_pipe[1]);
-            }
-            if (self.stdout_behavior == .Pipe) {
-                posix.close(stdout_pipe[0]);
-                posix.close(stdout_pipe[1]);
-            }
-            if (self.stderr_behavior == .Pipe) {
-                posix.close(stderr_pipe[0]);
-                posix.close(stderr_pipe[1]);
-            }
-            if (prog_pipe[1] != -1) {
-                if (prog_pipe[0] != prog_fileno) posix.close(prog_pipe[0]);
-                if (prog_pipe[1] != prog_fileno) posix.close(prog_pipe[1]);
-            }
 
             if (self.cwd_dir) |cwd| {
                 posix.fchdir(cwd.fd) catch |err| forkChildErrReport(err_pipe[1], err);
