@@ -1955,6 +1955,11 @@ test "delete a read-only file on windows" {
 test "delete a setAsCwd directory on Windows" {
     if (native_os != .windows) return error.SkipZigTest;
 
+    if (true) {
+        // https://github.com/ziglang/zig/issues/14968
+        return error.SkipZigTest;
+    }
+
     var tmp = tmpDir(.{});
     // Set tmp dir as current working directory.
     try tmp.dir.setAsCwd();
