@@ -3944,6 +3944,14 @@ test alignPointer {
     try S.checkAlign([*]u32, math.maxInt(usize) - 3, 8, 0);
 }
 
+/// Returns a pointer with an arbitrary (but correctly aligned) value.
+/// Only intended to be used in cases where the pointer's actual value
+/// is irrelevant (for example, a known-to-be-zero-length slice).
+pub fn dummyPointer(comptime PointerType: type) PointerType {
+    const alignment = @typeInfo(PointerType).pointer.alignment;
+    return @ptrFromInt(alignBackward(usize, math.maxInt(usize), alignment));
+}
+
 fn CopyPtrAttrs(
     comptime source: type,
     comptime size: std.builtin.Type.Pointer.Size,
