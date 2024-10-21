@@ -134,7 +134,7 @@ pub fn alignAllocLen(full_len: usize, alloc_len: usize, len_align: u29) usize {
 }
 
 const fail_allocator = Allocator{
-    .ptr = undefined,
+    .ptr = dummyPointer(*anyopaque),
     .vtable = &failAllocator_vtable,
 };
 
