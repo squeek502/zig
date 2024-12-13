@@ -924,7 +924,7 @@ pub fn GeneralPurposeAllocator(comptime config: Config) type {
                 bucket.requestedSizes(size_class)[slot_index] = 0;
             }
             if (bucket.used_count == 0) {
-                assert(self.buckets[bucket_index].orderedRemove(bucket.page));
+                assert(self.buckets[bucket_index].swapRemove(bucket.page));
                 if (self.cur_buckets[bucket_index] == bucket) {
                     self.cur_buckets[bucket_index] = null;
                 }
