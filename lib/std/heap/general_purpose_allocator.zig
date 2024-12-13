@@ -161,12 +161,12 @@ pub const Check = enum { ok, leak };
 pub fn GeneralPurposeAllocator(comptime config: Config) type {
     return struct {
         backing_allocator: Allocator = std.heap.page_allocator,
-        buckets: [small_bucket_count]Buckets = [1]Buckets{Buckets{}} ** small_bucket_count,
+        buckets: [small_bucket_count]Buckets = [1]Buckets{.empty} ** small_bucket_count,
         cur_buckets: [small_bucket_count]?*BucketHeader = [1]?*BucketHeader{null} ** small_bucket_count,
         large_allocations: LargeAllocTable = .{},
         empty_buckets: if (config.retain_metadata) Buckets else void =
             if (config.retain_metadata) Buckets{} else {},
-        bucket_node_pool: std.heap.MemoryPool(Buckets.Node) = std.heap.MemoryPool(Buckets.Node).init(std.heap.page_allocator),
+        buckets_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
 
         total_requested_bytes: @TypeOf(total_requested_bytes_init) = total_requested_bytes_init,
         requested_memory_limit: @TypeOf(requested_memory_limit_init) = requested_memory_limit_init,
@@ -178,11 +178,11 @@ pub fn GeneralPurposeAllocator(comptime config: Config) type {
         /// The initial state of a `GeneralPurposeAllocator`, containing no allocations and backed by the system page allocator.
         pub const init: Self = .{
             .backing_allocator = std.heap.page_allocator,
-            .buckets = [1]Buckets{.{}} ** small_bucket_count,
+            .buckets = [1]Buckets{.empty} ** small_bucket_count,
             .cur_buckets = [1]?*BucketHeader{null} ** small_bucket_count,
             .large_allocations = .{},
             .empty_buckets = if (config.retain_metadata) .{} else {},
-            .bucket_node_pool = .init(std.heap.page_allocator),
+            .buckets_arena = .init(std.heap.page_allocator),
         };
 
         const total_requested_bytes_init = if (config.enable_memory_limit) @as(usize, 0) else {};
@@ -210,12 +210,7 @@ pub fn GeneralPurposeAllocator(comptime config: Config) type {
         const largest_bucket_object_size = 1 << (small_bucket_count - 1);
         const LargestSizeClassInt = std.math.IntFittingRange(0, largest_bucket_object_size);
 
-        const bucketCompare = struct {
-            fn compare(a: *BucketHeader, b: *BucketHeader) std.math.Order {
-                return std.math.order(@intFromPtr(a.page), @intFromPtr(b.page));
-            }
-        }.compare;
-        const Buckets = std.Treap(*BucketHeader, bucketCompare);
+        const Buckets = std.AutoArrayHashMapUnmanaged([*]align(page_size) u8, *BucketHeader);
 
         const LargeAlloc = struct {
             bytes: []u8,
@@ -417,12 +412,9 @@ pub fn GeneralPurposeAllocator(comptime config: Config) type {
             var leaks = false;
 
             for (&self.buckets, 0..) |*buckets, bucket_i| {
-                if (buckets.root == null) continue;
                 const size_class = @as(usize, 1) << @as(math.Log2Int(usize), @intCast(bucket_i));
                 const used_bits_count = usedBitsCount(size_class);
-                var it = buckets.inorderIterator();
-                while (it.next()) |node| {
-                    const bucket = node.key;
+                for (buckets.values()) |bucket| {
                     leaks = detectLeaksInBucket(bucket, size_class, used_bits_count) or leaks;
                 }
             }
@@ -456,21 +448,15 @@ pub fn GeneralPurposeAllocator(comptime config: Config) type {
                     }
                 }
                 // free retained metadata for small allocations
-                while (self.empty_buckets.getMin()) |node| {
-                    // remove the node from the tree before destroying it
-                    var entry = self.empty_buckets.getEntryForExisting(node);
-                    entry.set(null);
-
-                    var bucket = node.key;
+                for (self.empty_buckets.values()) |bucket| {
                     if (config.never_unmap) {
                         // free page that was intentionally leaked by never_unmap
                         self.backing_allocator.free(bucket.page[0..page_size]);
                     }
                     // alloc_cursor was set to slot count when bucket added to empty_buckets
                     self.freeBucket(bucket, bucket.emptyBucketSizeClass());
-                    self.bucket_node_pool.destroy(node);
                 }
-                self.empty_buckets.root = null;
+                self.empty_buckets.clearRetainingCapacity();
             }
         }
 
@@ -495,7 +481,7 @@ pub fn GeneralPurposeAllocator(comptime config: Config) type {
                 self.freeRetainedMetadata();
             }
             self.large_allocations.deinit(self.backing_allocator);
-            self.bucket_node_pool.deinit();
+            self.buckets_arena.deinit();
             self.* = undefined;
             return @as(Check, @enumFromInt(@intFromBool(leaks)));
         }
@@ -535,12 +521,17 @@ pub fn GeneralPurposeAllocator(comptime config: Config) type {
             if (self.cur_buckets[bucket_index] == null or self.cur_buckets[bucket_index].?.alloc_cursor == slot_count) {
                 const new_bucket = try self.createBucket(size_class);
                 errdefer self.freeBucket(new_bucket, size_class);
-                const node = try self.bucket_node_pool.create();
-                node.key = new_bucket;
-                var entry = buckets.getEntryFor(new_bucket);
-                std.debug.assert(entry.node == null);
-                entry.set(node);
-                self.cur_buckets[bucket_index] = node.key;
+                if (config.retain_metadata) {
+                    // Allocate space for this bucket in the empty buckets data structure so that
+                    // we can avoid the possibility of OOM when adding this bucket to the empty buckets
+                    // during `free`.
+                    try self.empty_buckets.ensureTotalCapacity(
+                        self.buckets_arena.allocator(),
+                        self.empty_buckets.capacity() + 1,
+                    );
+                }
+                try buckets.putNoClobber(self.buckets_arena.allocator(), new_bucket.page, new_bucket);
+                self.cur_buckets[bucket_index] = new_bucket;
             }
             const bucket = self.cur_buckets[bucket_index].?;
 
@@ -568,10 +559,7 @@ pub fn GeneralPurposeAllocator(comptime config: Config) type {
             if (current_bucket != null and current_bucket.?.page == search_page) {
                 return current_bucket;
             }
-            var search_header: BucketHeader = undefined;
-            search_header.page = search_page;
-            const entry = buckets.getEntryFor(&search_header);
-            return if (entry.node) |node| node.key else null;
+            return buckets.get(search_page);
         }
 
         /// This function assumes the object is in the large object storage regardless
@@ -936,10 +924,7 @@ pub fn GeneralPurposeAllocator(comptime config: Config) type {
                 bucket.requestedSizes(size_class)[slot_index] = 0;
             }
             if (bucket.used_count == 0) {
-                var entry = self.buckets[bucket_index].getEntryFor(bucket);
-                // save the node for destruction/insertion into in empty_buckets
-                const node = entry.node.?;
-                entry.set(null);
+                assert(self.buckets[bucket_index].orderedRemove(bucket.page));
                 if (self.cur_buckets[bucket_index] == bucket) {
                     self.cur_buckets[bucket_index] = null;
                 }
@@ -948,13 +933,12 @@ pub fn GeneralPurposeAllocator(comptime config: Config) type {
                 }
                 if (!config.retain_metadata) {
                     self.freeBucket(bucket, size_class);
-                    self.bucket_node_pool.destroy(node);
                 } else {
                     // move alloc_cursor to end so we can tell size_class later
                     const slot_count = @divExact(page_size, size_class);
                     bucket.alloc_cursor = @as(SlotIndex, @truncate(slot_count));
-                    var empty_entry = self.empty_buckets.getEntryFor(node.key);
-                    empty_entry.set(node);
+                    // space for this bucket was allocated when the bucket itself was allocated
+                    self.empty_buckets.putAssumeCapacityNoClobber(bucket.page, bucket);
                 }
             } else {
                 @memset(old_mem, undefined);
@@ -1434,7 +1418,7 @@ test "double frees" {
 
     // check that flushing retained metadata doesn't disturb live allocations
     gpa.flushRetainedMetadata();
-    try std.testing.expect(gpa.empty_buckets.root == null);
+    try std.testing.expectEqual(0, gpa.empty_buckets.count());
     try std.testing.expect(GPA.searchBucket(&gpa.buckets[index], @intFromPtr(normal_small.ptr), gpa.cur_buckets[index]) != null);
     try std.testing.expect(gpa.large_allocations.contains(@intFromPtr(normal_large.ptr)));
     try std.testing.expect(!gpa.large_allocations.contains(@intFromPtr(large.ptr)));
