@@ -98,6 +98,7 @@ const normal_usage =
     \\  ranlib           Use Zig as a drop-in ranlib
     \\  objcopy          Use Zig as a drop-in objcopy
     \\  rc               Use Zig as a drop-in rc.exe
+    \\  windres          Use Zig as a drop-in windres
     \\
     \\  env              Print lib path, std path, cache directory, and version
     \\  help             Print this help and exit
@@ -307,6 +308,15 @@ fn mainArgs(gpa: Allocator, arena: Allocator, args: []const []const u8) !void {
             .depend_on_aro = true,
             .prepend_zig_lib_dir_path = true,
             .server = use_server,
+        });
+    } else if (mem.eql(u8, cmd, "windres")) {
+        const cmd_args_including_windres = args[1..];
+        return jitCmd(gpa, arena, cmd_args_including_windres, .{
+            .cmd_name = "resinator",
+            .root_src_path = "resinator/main.zig",
+            .depend_on_aro = true,
+            .prepend_zig_lib_dir_path = true,
+            .server = false,
         });
     } else if (mem.eql(u8, cmd, "fmt")) {
         dev.check(.fmt_command);
