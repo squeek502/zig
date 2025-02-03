@@ -344,11 +344,6 @@ pub const RunResult = struct {
     stderr: []u8,
 };
 
-fn writeFifoDataToArrayList(allocator: Allocator, list: *std.ArrayListUnmanaged(u8), fifo: *std.io.PollFifo) !void {
-    if (fifo.head != 0) fifo.realign();
-    try list.appendSlice(allocator, fifo.buf[0..fifo.count]);
-}
-
 /// Collect the output from the process's stdout and stderr. Will return once all output
 /// has been collected. This does not mean that the process has ended. `wait` should still
 /// be called to wait for and clean up the process.
@@ -365,21 +360,42 @@ pub fn collectOutput(
     assert(child.stdout_behavior == .Pipe);
     assert(child.stderr_behavior == .Pipe);
 
-    var poller = std.io.poll(allocator, enum { stdout, stderr }, .{
+    const BufContext = struct {
+        buf: *std.ArrayListUnmanaged(u8),
+        allocator: Allocator,
+
+        pub fn getUnusedSliceWithSize(ctx: @This(), size: usize) ![]u8 {
+            try ctx.buf.ensureUnusedCapacity(ctx.allocator, size);
+            return ctx.buf.unusedCapacitySlice()[0..size];
+        }
+
+        pub fn markUnusedAsWritten(ctx: @This(), count: usize) void {
+            ctx.buf.items.len += count;
+        }
+
+        pub fn write(ctx: @This(), data: []const u8) !void {
+            return ctx.buf.appendSlice(ctx.allocator, data);
+        }
+    };
+    const Poller = std.io.PollerImpl(enum { stdout, stderr }, BufContext);
+
+    var poller: Poller = .init(.{
         .stdout = child.stdout.?,
         .stderr = child.stderr.?,
     });
     defer poller.deinit();
 
-    while (try poller.poll()) {
-        if (poller.fifo(.stdout).count > max_output_bytes)
+    const contexts = [_]BufContext{
+        .{ .allocator = allocator, .buf = stdout },
+        .{ .allocator = allocator, .buf = stderr },
+    };
+
+    while (try poller.poll(&contexts)) {
+        if (stdout.items.len > max_output_bytes)
             return error.StdoutStreamTooLong;
-        if (poller.fifo(.stderr).count > max_output_bytes)
+        if (stderr.items.len > max_output_bytes)
             return error.StderrStreamTooLong;
     }
-
-    try writeFifoDataToArrayList(allocator, stdout, poller.fifo(.stdout));
-    try writeFifoDataToArrayList(allocator, stderr, poller.fifo(.stderr));
 }
 
 pub const RunError = posix.GetCwdError || posix.ReadError || SpawnError || posix.PollError || error{
