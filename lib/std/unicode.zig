@@ -679,8 +679,8 @@ fn testValidateSlice() !void {
     try testing.expect(!utf8ValidateSlice("\xf7\xbf\xbf\xbf"));
     try testing.expect(!utf8ValidateSlice("\xfb\xbf\xbf\xbf\xbf"));
     try testing.expect(!utf8ValidateSlice("\xc0\x80"));
-    try testing.expect(!utf8ValidateSlice("\xed\xa0\x80"));
-    try testing.expect(!utf8ValidateSlice("\xed\xbf\xbf"));
+    try testing.expect(!utf8ValidateSlice("\u{D800}")); // high surrogate
+    try testing.expect(!utf8ValidateSlice("\u{DFFF}")); // low surrogate
 }
 
 test "valid utf8" {
@@ -1695,8 +1695,8 @@ fn testValidateWtf8Slice() !void {
     try testing.expect(!wtf8ValidateSlice("\xc0\x80"));
 
     // But surrogate codepoints are only valid in WTF-8.
-    try testing.expect(wtf8ValidateSlice("\xed\xa0\x80"));
-    try testing.expect(wtf8ValidateSlice("\xed\xbf\xbf"));
+    try testing.expect(wtf8ValidateSlice("\u{D800}"));
+    try testing.expect(wtf8ValidateSlice("\u{DFFF}"));
 }
 
 /// Wtf8View iterates the code points of a WTF-8 encoded string,
@@ -1925,17 +1925,17 @@ test wtf8ToUtf8Lossy {
     try wtf8ToUtf8Lossy(&buf, ascii);
     try testing.expectEqualStrings("abcd", buf[0..ascii.len]);
 
-    const high_surrogate_half = "ab\xed\xa0\xbdcd";
+    const high_surrogate_half = "ab\u{D83D}cd";
     try wtf8ToUtf8Lossy(&buf, high_surrogate_half);
     try testing.expectEqualStrings("ab\u{FFFD}cd", buf[0..high_surrogate_half.len]);
 
-    const low_surrogate_half = "ab\xed\xb2\xa9cd";
+    const low_surrogate_half = "ab\u{DCA9}cd";
     try wtf8ToUtf8Lossy(&buf, low_surrogate_half);
     try testing.expectEqualStrings("ab\u{FFFD}cd", buf[0..low_surrogate_half.len]);
 
     // If the WTF-8 is not well-formed, each surrogate half is converted into a separate
     // replacement character instead of being interpreted as a surrogate pair.
-    const encoded_surrogate_pair = "ab\xed\xa0\xbd\xed\xb2\xa9cd";
+    const encoded_surrogate_pair = "ab\u{D83D}\u{DCA9}cd";
     try wtf8ToUtf8Lossy(&buf, encoded_surrogate_pair);
     try testing.expectEqualStrings("ab\u{FFFD}\u{FFFD}cd", buf[0..encoded_surrogate_pair.len]);
 
@@ -1958,7 +1958,7 @@ test wtf8ToUtf8LossyAlloc {
     }
 
     {
-        const surrogate_half = "ab\xed\xa0\xbdcd";
+        const surrogate_half = "ab\u{D83D}cd";
         const utf8 = try wtf8ToUtf8LossyAlloc(testing.allocator, surrogate_half);
         defer testing.allocator.free(utf8);
         try testing.expectEqualStrings("ab\u{FFFD}cd", utf8);
@@ -1967,7 +1967,7 @@ test wtf8ToUtf8LossyAlloc {
     {
         // If the WTF-8 is not well-formed, each surrogate half is converted into a separate
         // replacement character instead of being interpreted as a surrogate pair.
-        const encoded_surrogate_pair = "ab\xed\xa0\xbd\xed\xb2\xa9cd";
+        const encoded_surrogate_pair = "ab\u{D83D}\u{DCA9}cd";
         const utf8 = try wtf8ToUtf8LossyAlloc(testing.allocator, encoded_surrogate_pair);
         defer testing.allocator.free(utf8);
         try testing.expectEqualStrings("ab\u{FFFD}\u{FFFD}cd", utf8);
@@ -1986,7 +1986,7 @@ test wtf8ToUtf8LossyAllocZ {
     }
 
     {
-        const surrogate_half = "ab\xed\xa0\xbdcd";
+        const surrogate_half = "ab\u{D83D}cd";
         const utf8 = try wtf8ToUtf8LossyAllocZ(testing.allocator, surrogate_half);
         defer testing.allocator.free(utf8);
         try testing.expectEqualStrings("ab\u{FFFD}cd", utf8);
@@ -1995,7 +1995,7 @@ test wtf8ToUtf8LossyAllocZ {
     {
         // If the WTF-8 is not well-formed, each surrogate half is converted into a separate
         // replacement character instead of being interpreted as a surrogate pair.
-        const encoded_surrogate_pair = "ab\xed\xa0\xbd\xed\xb2\xa9cd";
+        const encoded_surrogate_pair = "ab\u{D83D}\u{DCA9}cd";
         const utf8 = try wtf8ToUtf8LossyAllocZ(testing.allocator, encoded_surrogate_pair);
         defer testing.allocator.free(utf8);
         try testing.expectEqualStrings("ab\u{FFFD}\u{FFFD}cd", utf8);
@@ -2039,7 +2039,7 @@ pub const Wtf16LeIterator = struct {
 test "non-well-formed WTF-8 does not roundtrip" {
     // This encodes the surrogate pair U+D83D U+DCA9.
     // The well-formed version of this would be U+1F4A9 which is \xF0\x9F\x92\xA9.
-    const non_well_formed_wtf8 = "\xed\xa0\xbd\xed\xb2\xa9";
+    const non_well_formed_wtf8 = "\u{D83D}\u{DCA9}";
 
     var wtf16_buf: [2]u16 = undefined;
     const wtf16_len = try wtf8ToWtf16Le(&wtf16_buf, non_well_formed_wtf8);
@@ -2056,7 +2056,7 @@ test "non-well-formed WTF-8 does not roundtrip" {
 
     // Converting to WTF-16 and back results in well-formed WTF-8,
     // but it does not match the input WTF-8
-    try testing.expectEqualSlices(u8, "\xf0\x9f\x92\xa9", wtf8);
+    try testing.expectEqualSlices(u8, "\u{1F4A9}", wtf8);
 }
 
 fn testRoundtripWtf8(wtf8: []const u8) !void {
@@ -2097,15 +2097,15 @@ fn testRoundtripWtf8(wtf8: []const u8) !void {
 }
 
 test "well-formed WTF-8 roundtrips" {
-    try testRoundtripWtf8("\xed\x9f\xbf"); // not a surrogate half
-    try testRoundtripWtf8("\xed\xa0\xbd"); // high surrogate
-    try testRoundtripWtf8("\xed\xb2\xa9"); // low surrogate
-    try testRoundtripWtf8("\xed\xa0\xbd \xed\xb2\xa9"); // <high surrogate><space><low surrogate>
-    try testRoundtripWtf8("\xed\xa0\x80\xed\xaf\xbf"); // <high surrogate><high surrogate>
-    try testRoundtripWtf8("\xed\xa0\x80\xee\x80\x80"); // <high surrogate><not surrogate>
-    try testRoundtripWtf8("\xed\x9f\xbf\xed\xb0\x80"); // <not surrogate><low surrogate>
-    try testRoundtripWtf8("a\xed\xb0\x80"); // <not surrogate><low surrogate>
-    try testRoundtripWtf8("\xf0\x9f\x92\xa9"); // U+1F4A9, encoded as a surrogate pair in WTF-16
+    try testRoundtripWtf8("\u{D7FF}"); // not a surrogate half
+    try testRoundtripWtf8("\u{D83D}"); // high surrogate
+    try testRoundtripWtf8("\u{DCA9}"); // low surrogate
+    try testRoundtripWtf8("\u{D83D} \u{DCA9}"); // <high surrogate><space><low surrogate>
+    try testRoundtripWtf8("\u{D800}\u{DBFF}"); // <high surrogate><high surrogate>
+    try testRoundtripWtf8("\u{D800}\u{E000}"); // <high surrogate><not surrogate>
+    try testRoundtripWtf8("\u{D7FF}\u{DC00}"); // <not surrogate><low surrogate>
+    try testRoundtripWtf8("a\u{DC00}"); // <not surrogate><low surrogate>
+    try testRoundtripWtf8("\u{1F4A9}"); // U+1F4A9, encoded as a surrogate pair in WTF-16
 }
 
 fn testRoundtripWtf16(wtf16le: []const u16) !void {
