@@ -11,6 +11,41 @@ pub fn main() !void {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
+    // c.getenv
+    if (builtin.link_libc) {
+        try std.testing.expectEqualSlices(u8, "123", std.mem.span(std.c.getenv("FOO").?));
+        try std.testing.expectEqual(null, std.c.getenv("FO"));
+        try std.testing.expectEqual(null, std.c.getenv("FOOO"));
+        if (builtin.os.tag == .windows) {
+            try std.testing.expectEqualSlices(u8, "123", std.mem.span(std.c.getenv("foo").?));
+        }
+        try std.testing.expectEqualSlices(u8, "ABC=123", std.mem.span(std.c.getenv("EQUALS").?));
+        try std.testing.expectEqual(null, std.c.getenv("EQUALS=ABC"));
+        try std.testing.expectEqualSlices(u8, "non-ascii አማርኛ \u{10FFFF}", std.mem.span(std.c.getenv("КИРиллИЦА").?));
+        if (builtin.os.tag == .windows) {
+            try std.testing.expectEqualSlices(u8, "non-ascii አማርኛ \u{10FFFF}", std.mem.span(std.c.getenv("кирИЛЛица").?));
+        }
+        try std.testing.expectEqualSlices(u8, "", std.mem.span(std.c.getenv("NO_VALUE").?));
+        try std.testing.expectEqual(null, std.c.getenv("NOT_SET"));
+        if (builtin.os.tag == .windows) {
+            try std.testing.expectEqualSlices(u8, "hi", std.mem.span(std.c.getenv("=HIDDEN").?));
+            try std.testing.expectEqualSlices(u8, "\xed\xa0\x80", std.mem.span(std.c.getenv("INVALID_UTF16_\xed\xa0\x80").?));
+            std.debug.dumpHex(std.mem.span(std.c.getenv("INVALID_UTF16_\xed\xa0\x80").?));
+        }
+    }
+
+    // posix.getenvZ
+    if (builtin.os.tag != .windows and builtin.link_libc) {
+        try std.testing.expectEqualSlices(u8, "123", std.posix.getenvZ("FOO").?);
+        try std.testing.expectEqual(null, std.posix.getenvZ("FO"));
+        try std.testing.expectEqual(null, std.posix.getenvZ("FOOO"));
+        try std.testing.expectEqualSlices(u8, "ABC=123", std.posix.getenvZ("EQUALS").?);
+        try std.testing.expectEqual(null, std.posix.getenvZ("EQUALS=ABC"));
+        try std.testing.expectEqualSlices(u8, "non-ascii አማርኛ \u{10FFFF}", std.posix.getenvZ("КИРиллИЦА").?);
+        try std.testing.expectEqualSlices(u8, "", std.posix.getenvZ("NO_VALUE").?);
+        try std.testing.expectEqual(null, std.posix.getenvZ("NOT_SET"));
+    }
+
     // hasNonEmptyEnvVar
     {
         try std.testing.expect(try std.process.hasNonEmptyEnvVar(allocator, "FOO"));
