@@ -382,6 +382,69 @@ pub fn buildImportLib(comp: *Compilation, lib_name: []const u8) !void {
     });
 }
 
+pub fn buildImportLibDirect(gpa: std.mem.Allocator, def_path: []const u8, output_dir_path: []const u8, zig_lib_dir_path: []const u8, target: std.Target) !void {
+    dev.check(.build_import_lib);
+
+    var output_dir = try std.fs.cwd().makeOpenPath(output_dir_path, .{});
+    defer output_dir.close();
+
+    var arena_allocator = std.heap.ArenaAllocator.init(gpa);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    const aro = @import("aro");
+    var aro_comp = aro.Compilation.init(gpa, std.fs.cwd());
+    defer aro_comp.deinit();
+
+    aro_comp.target = target;
+
+    const include_dir = try std.fs.path.join(arena, &.{ zig_lib_dir_path, "libc", "mingw", "def-include" });
+
+    try aro_comp.include_dirs.append(gpa, include_dir);
+
+    const builtin_macros = try aro_comp.generateBuiltinMacros(.include_system_defines);
+    const def_file_source = try aro_comp.addSourceFromPath(def_path);
+
+    var pp = aro.Preprocessor.init(&aro_comp);
+    defer pp.deinit();
+    pp.linemarkers = .none;
+    pp.preserve_whitespace = true;
+
+    try pp.preprocessSources(&.{ def_file_source, builtin_macros });
+
+    for (aro_comp.diagnostics.list.items) |diagnostic| {
+        if (diagnostic.kind == .@"fatal error" or diagnostic.kind == .@"error") {
+            aro.Diagnostics.render(&aro_comp, std.io.tty.detectConfig(std.fs.File.stderr()));
+            return error.AroPreprocessorFailed;
+        }
+    }
+
+    {
+        // new scope to ensure definition file is written before passing the path to WriteImportLibrary
+        const def_final_file = try output_dir.createFile(std.fs.path.basename(def_path), .{ .truncate = true });
+        defer def_final_file.close();
+        try pp.prettyPrintTokens(def_final_file.deprecatedWriter(), .result_only);
+    }
+
+    const lib_filename = try std.mem.concat(arena, u8, &.{ std.fs.path.stem(def_path), ".lib" });
+    const lib_final_path = try std.fs.path.join(arena, &.{ output_dir_path, lib_filename });
+
+    if (!build_options.have_llvm) return error.ZigCompilerNotBuiltWithLLVMExtensions;
+    const llvm_bindings = @import("../codegen/llvm/bindings.zig");
+    const def_final_path_z = try std.fs.path.joinZ(arena, &.{ output_dir_path, std.fs.path.basename(def_path) });
+    const lib_final_path_z = try arena.dupeZ(u8, lib_final_path);
+    if (llvm_bindings.WriteImportLibrary(
+        def_final_path_z.ptr,
+        @intFromEnum(target.toCoffMachine()),
+        lib_final_path_z.ptr,
+        true,
+    )) {
+        // TODO surface a proper error here
+        log.err("unable to turn {s} into {s}", .{ def_path, lib_final_path });
+        return error.WritingImportLibFailed;
+    }
+}
+
 pub fn libExists(
     allocator: Allocator,
     target: *const std.Target,

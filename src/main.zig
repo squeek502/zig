@@ -312,6 +312,8 @@ fn mainArgs(gpa: Allocator, arena: Allocator, args: []const []const u8) !void {
             .cmd_name = "objcopy",
             .root_src_path = "objcopy.zig",
         });
+    } else if (mem.eql(u8, cmd, "implib")) {
+        return cmdImpLib(gpa, arena, cmd_args);
     } else if (mem.eql(u8, cmd, "fetch")) {
         return cmdFetch(gpa, arena, cmd_args);
     } else if (mem.eql(u8, cmd, "libc")) {
@@ -6748,6 +6750,35 @@ fn accessFrameworkPath(
 fn parseRcIncludes(arg: []const u8) Compilation.RcIncludes {
     return std.meta.stringToEnum(Compilation.RcIncludes, arg) orelse
         fatal("unsupported rc includes type: '{s}'", .{arg});
+}
+
+fn cmdImpLib(
+    gpa: Allocator,
+    arena: Allocator,
+    args: []const []const u8,
+) !void {
+    if (args.len < 2) fatal("need input and output path", .{});
+    const input_path = args[0];
+    const output_dir_path = args[1];
+
+    const target_query: std.Target.Query = .{};
+    const target = std.zig.resolveTargetQueryOrFatal(target_query);
+
+    const self_exe_path = fs.selfExePathAlloc(arena) catch |err| {
+        fatal("unable to find self exe path: {s}", .{@errorName(err)});
+    };
+
+    var dirs: Compilation.Directories = .init(
+        arena,
+        null,
+        null,
+        .global,
+        if (native_os == .wasi) wasi_preopens,
+        self_exe_path,
+    );
+    defer dirs.deinit();
+
+    try mingw.buildImportLibDirect(gpa, input_path, output_dir_path, dirs.zig_lib.path.?, target);
 }
 
 const usage_fetch =
