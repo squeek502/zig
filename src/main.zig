@@ -6757,11 +6757,41 @@ fn cmdImpLib(
     arena: Allocator,
     args: []const []const u8,
 ) !void {
-    if (args.len < 2) fatal("need input and output path", .{});
-    const input_path = args[0];
-    const output_dir_path = args[1];
+    var input_file: ?[]const u8 = null;
+    var maybe_output_dir: ?[]const u8 = null;
+    var target_arch_os_abi: []const u8 = "x86_64-windows-gnu";
+    {
+        var i: usize = 0;
+        while (i < args.len) : (i += 1) {
+            const arg = args[i];
+            if (mem.startsWith(u8, arg, "-")) {
+                if (mem.eql(u8, arg, "-outdir")) {
+                    if (i + 1 >= args.len) fatal("expected parameter after {s}", .{arg});
+                    i += 1;
+                    maybe_output_dir = args[i];
+                } else if (mem.eql(u8, arg, "-target")) {
+                    if (i + 1 >= args.len) fatal("expected parameter after {s}", .{arg});
+                    i += 1;
+                    target_arch_os_abi = args[i];
+                } else {
+                    fatal("unrecognized parameter: '{s}'", .{arg});
+                }
+            } else if (input_file != null) {
+                fatal("unexpected extra parameter: '{s}'", .{arg});
+            } else {
+                input_file = arg;
+            }
+        }
+    }
 
-    const target_query: std.Target.Query = .{};
+    if (input_file == null) {
+        fatal("missing input file argument", .{});
+    }
+    const output_dir = maybe_output_dir orelse ".";
+
+    const target_query = std.zig.parseTargetQueryOrReportFatalError(arena, .{
+        .arch_os_abi = target_arch_os_abi,
+    });
     const target = std.zig.resolveTargetQueryOrFatal(target_query);
 
     const self_exe_path = fs.selfExePathAlloc(arena) catch |err| {
@@ -6778,7 +6808,7 @@ fn cmdImpLib(
     );
     defer dirs.deinit();
 
-    try mingw.buildImportLibDirect(gpa, input_path, output_dir_path, dirs.zig_lib.path.?, target);
+    try mingw.buildImportLibDirect(gpa, input_file.?, output_dir, dirs.zig_lib.path.?, target);
 }
 
 const usage_fetch =

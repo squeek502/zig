@@ -382,15 +382,19 @@ pub fn buildImportLib(comp: *Compilation, lib_name: []const u8) !void {
     });
 }
 
-pub fn buildImportLibDirect(gpa: std.mem.Allocator, def_path: []const u8, output_dir_path: []const u8, zig_lib_dir_path: []const u8, target: std.Target) !void {
+pub fn buildImportLibDirect(gpa: std.mem.Allocator, def_path: []const u8, output_root_path: []const u8, zig_lib_dir_path: []const u8, target: std.Target) !void {
     dev.check(.build_import_lib);
 
-    var output_dir = try std.fs.cwd().makeOpenPath(output_dir_path, .{});
-    defer output_dir.close();
+    const def_basename = std.fs.path.basename(def_path);
+    const lib_name = def_basename[0 .. std.mem.indexOfScalar(u8, def_basename, '.') orelse def_basename.len];
 
     var arena_allocator = std.heap.ArenaAllocator.init(gpa);
     defer arena_allocator.deinit();
     const arena = arena_allocator.allocator();
+
+    const output_dir_path = output_root_path;
+    var output_dir = try std.fs.cwd().makeOpenPath(output_dir_path, .{});
+    defer output_dir.close();
 
     const aro = @import("aro");
     var aro_comp = aro.Compilation.init(gpa, std.fs.cwd());
@@ -419,20 +423,22 @@ pub fn buildImportLibDirect(gpa: std.mem.Allocator, def_path: []const u8, output
         }
     }
 
+    const def_pp_filename = try std.mem.concat(arena, u8, &.{ lib_name, ".pp.def" });
+
     {
         // new scope to ensure definition file is written before passing the path to WriteImportLibrary
-        const def_final_file = try output_dir.createFile(std.fs.path.basename(def_path), .{ .truncate = true });
+        const def_final_file = try output_dir.createFile(def_pp_filename, .{ .truncate = true });
         defer def_final_file.close();
         try pp.prettyPrintTokens(def_final_file.deprecatedWriter(), .result_only);
     }
 
-    const lib_filename = try std.mem.concat(arena, u8, &.{ std.fs.path.stem(def_path), ".lib" });
-    const lib_final_path = try std.fs.path.join(arena, &.{ output_dir_path, lib_filename });
+    const lib_filename = try std.mem.concat(arena, u8, &.{ lib_name, ".lib" });
 
     if (!build_options.have_llvm) return error.ZigCompilerNotBuiltWithLLVMExtensions;
     const llvm_bindings = @import("../codegen/llvm/bindings.zig");
-    const def_final_path_z = try std.fs.path.joinZ(arena, &.{ output_dir_path, std.fs.path.basename(def_path) });
-    const lib_final_path_z = try arena.dupeZ(u8, lib_final_path);
+    const def_final_path_z = try std.fs.path.joinZ(arena, &.{ output_dir_path, def_pp_filename });
+    const lib_final_path_z = try std.fs.path.joinZ(arena, &.{ output_dir_path, lib_filename });
+    std.debug.print("{s} to {s}\n", .{ def_final_path_z, lib_final_path_z });
     if (llvm_bindings.WriteImportLibrary(
         def_final_path_z.ptr,
         @intFromEnum(target.toCoffMachine()),
@@ -440,7 +446,7 @@ pub fn buildImportLibDirect(gpa: std.mem.Allocator, def_path: []const u8, output
         true,
     )) {
         // TODO surface a proper error here
-        log.err("unable to turn {s} into {s}", .{ def_path, lib_final_path });
+        log.err("unable to turn {s} into {s}", .{ def_final_path_z, lib_final_path_z });
         return error.WritingImportLibFailed;
     }
 }
