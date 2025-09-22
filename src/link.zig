@@ -618,17 +618,22 @@ pub const File = struct {
                     .mode = determineMode(output_mode, link_mode),
                 });
             },
-            .elf2 => {
-                const elf = base.cast(.elf2).?;
+            .elf2, .coff2 => {
+                const mf = if (base.cast(.elf2)) |elf|
+                    &elf.mf
+                else if (base.cast(.coff2)) |coff|
+                    &coff.mf
+                else
+                    unreachable;
                 if (base.file == null) {
-                    elf.mf.file = try base.emit.root_dir.handle.createFile(base.emit.sub_path, .{
+                    mf.file = try base.emit.root_dir.handle.createFile(base.emit.sub_path, .{
                         .truncate = false,
                         .read = true,
                         .mode = determineMode(comp.config.output_mode, comp.config.link_mode),
                     });
-                    base.file = elf.mf.file;
-                    try elf.mf.ensureTotalCapacity(
-                        @intCast(elf.mf.nodes.items[0].location().resolve(&elf.mf)[1]),
+                    base.file = mf.file;
+                    try mf.ensureTotalCapacity(
+                        @intCast(mf.nodes.items[0].location().resolve(mf)[1]),
                     );
                 }
             },
@@ -702,12 +707,17 @@ pub const File = struct {
                     }
                 }
             },
-            .elf2 => {
-                const elf = base.cast(.elf2).?;
+            .elf2, .coff2 => {
+                const mf = if (base.cast(.elf2)) |elf|
+                    &elf.mf
+                else if (base.cast(.coff2)) |coff|
+                    &coff.mf
+                else
+                    unreachable;
                 if (base.file) |f| {
-                    elf.mf.unmap();
-                    assert(elf.mf.file.handle == f.handle);
-                    elf.mf.file = undefined;
+                    mf.unmap();
+                    assert(mf.file.handle == f.handle);
+                    mf.file = undefined;
                     f.close();
                     base.file = null;
                 }
@@ -828,7 +838,7 @@ pub const File = struct {
             .spirv => {},
             .goff, .xcoff => {},
             .plan9 => unreachable,
-            .elf2 => {},
+            .elf2, .coff2 => {},
             inline else => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).updateLineNumber(pt, ti_id);
@@ -864,7 +874,7 @@ pub const File = struct {
     pub fn idle(base: *File, tid: Zcu.PerThread.Id) !bool {
         switch (base.tag) {
             else => return false,
-            inline .elf2 => |tag| {
+            inline .elf2, .coff2 => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).idle(tid);
             },
@@ -874,7 +884,7 @@ pub const File = struct {
     pub fn updateErrorData(base: *File, pt: Zcu.PerThread) !void {
         switch (base.tag) {
             else => {},
-            inline .elf2 => |tag| {
+            inline .elf2, .coff2 => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).updateErrorData(pt);
             },
@@ -1155,7 +1165,7 @@ pub const File = struct {
         if (base.zcu_object_basename != null) return;
 
         switch (base.tag) {
-            inline .elf2, .wasm => |tag| {
+            inline .elf2, .coff2, .wasm => |tag| {
                 dev.check(tag.devFeature());
                 return @as(*tag.Type(), @fieldParentPtr("base", base)).prelink(base.comp.link_prog_node);
             },
@@ -1165,6 +1175,7 @@ pub const File = struct {
 
     pub const Tag = enum {
         coff,
+        coff2,
         elf,
         elf2,
         macho,
@@ -1179,6 +1190,7 @@ pub const File = struct {
         pub fn Type(comptime tag: Tag) type {
             return switch (tag) {
                 .coff => Coff,
+                .coff2 => Coff2,
                 .elf => Elf,
                 .elf2 => Elf2,
                 .macho => MachO,
@@ -1194,7 +1206,7 @@ pub const File = struct {
 
         fn fromObjectFormat(ofmt: std.Target.ObjectFormat, use_new_linker: bool) Tag {
             return switch (ofmt) {
-                .coff => .coff,
+                .coff => if (use_new_linker) .coff2 else .coff,
                 .elf => if (use_new_linker) .elf2 else .elf,
                 .macho => .macho,
                 .wasm => .wasm,
@@ -1280,6 +1292,7 @@ pub const File = struct {
     pub const Lld = @import("link/Lld.zig");
     pub const C = @import("link/C.zig");
     pub const Coff = @import("link/Coff.zig");
+    pub const Coff2 = @import("link/Coff2.zig");
     pub const Elf = @import("link/Elf.zig");
     pub const Elf2 = @import("link/Elf2.zig");
     pub const MachO = @import("link/MachO.zig");
