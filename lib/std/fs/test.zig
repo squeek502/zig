@@ -1851,6 +1851,10 @@ test "selective walker, skip entries that start with ." {
     var num_walked: usize = 0;
     while (try walker.next()) |entry| {
         if (entry.basename[0] == '.') continue;
+        if (entry.kind == .directory) {
+            try walker.enter(entry);
+        }
+
         testing.expect(expected_basenames.has(entry.basename)) catch |err| {
             std.debug.print("found unexpected basename: {f}\n", .{std.ascii.hexEscape(entry.basename, .lower)});
             return err;
@@ -1859,15 +1863,10 @@ test "selective walker, skip entries that start with ." {
             std.debug.print("found unexpected path: {f}\n", .{std.ascii.hexEscape(entry.path, .lower)});
             return err;
         };
-
-        testing.expectEqual(expected_paths.get(entry.path).?, walker.depth()) catch |err| {
-            std.debug.print("path reported unexpected depth: {f}, {d}, expected {d}\n", .{ std.ascii.hexEscape(entry.path, .lower), walker.depth(), expected_paths.get(entry.path).? });
+        testing.expectEqual(expected_paths.get(entry.path).?, entry.depth()) catch |err| {
+            std.debug.print("path reported unexpected depth: {f}\n", .{std.ascii.hexEscape(entry.path, .lower)});
             return err;
         };
-
-        if (entry.kind == .directory) {
-            try walker.enter(entry);
-        }
 
         // make sure that the entry.dir is the containing dir
         var entry_dir = try entry.dir.openDir(entry.basename, .{});
